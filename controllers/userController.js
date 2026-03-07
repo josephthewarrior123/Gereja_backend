@@ -1,424 +1,271 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const userDAO = require('../dao/userDAO');
+const groupDAO = require('../dao/groupDAO');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
-const JWT_EXPIRES_IN = '7d';
+const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret';
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
+const VALID_ROLES = ['super_admin', 'admin', 'user'];
 
-// Valid user roles
-const USER_ROLES = {
-  ADMIN: 'admin',
-  USER: 'user',
-  PAID_USER: 'paid_user'
-};
+function normalizeGroupInput(groups) {
+  if (!Array.isArray(groups)) return [];
+  return groups
+    .map((g) => String(g || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, ''))
+    .filter(Boolean);
+}
+
+async function normalizeGroups(groups) {
+  let activeKeys = await groupDAO.getActiveGroupKeys();
+  if (!activeKeys.length) {
+    await groupDAO.upsertGroup('ranting', 'system');
+    await groupDAO.upsertGroup('pemuda', 'system');
+    activeKeys = await groupDAO.getActiveGroupKeys();
+  }
+  const active = new Set(activeKeys);
+  return normalizeGroupInput(groups).filter((g) => active.has(g));
+}
+
+async function getBootstrapManagedGroups(actorUsername = null) {
+  let active = await groupDAO.getActiveGroupKeys();
+  if (!active.length) {
+    await groupDAO.upsertGroup('ranting', actorUsername);
+    await groupDAO.upsertGroup('pemuda', actorUsername);
+    active = await groupDAO.getActiveGroupKeys();
+  }
+  return active;
+}
+
+function buildToken(user) {
+  return jwt.sign(
+    {
+      username: user.username,
+      role: user.role,
+      groups: user.groups || [],
+      managedGroups: user.managedGroups || [],
+    },
+    JWT_SECRET,
+    { expiresIn: JWT_EXPIRES_IN }
+  );
+}
 
 class UserController {
-  // Sign Up
   async signUp(req, res) {
     try {
-      const { fullName, username, password, role } = req.body;
-
-      // Validation
+      const { fullName, username, password, phone_number = '', email = '', groups = [] } = req.body;
       if (!fullName || !username || !password) {
-        return res.status(400).json({
-          success: false,
-          error: 'Full name, username and password are required',
-        });
+        return res.status(400).json({ success: false, error: 'fullName, username, password wajib' });
       }
-
-      // Validate password length
       if (password.length < 6) {
-        return res.status(400).json({
-          success: false,
-          error: 'Password must be at least 6 characters',
-        });
+        return res.status(400).json({ success: false, error: 'password minimal 6 karakter' });
       }
 
-      // Validate username length
-      if (username.length < 4) {
-        return res.status(400).json({
-          success: false,
-          error: 'Username must be at least 4 characters',
-        });
-      }
-
-      // Check if username already exists
-      const usernameExists = await userDAO.usernameExists(username);
-      if (usernameExists) {
-        return res.status(400).json({
-          success: false,
-          error: 'Username already taken',
-        });
-      }
-
-      // Validate and set role
-      let userRole = USER_ROLES.USER; // Default
-      if (role) {
-        if (!Object.values(USER_ROLES).includes(role)) {
-          return res.status(400).json({
-            success: false,
-            error: 'Invalid role. Must be: admin, user, or paid_user',
-          });
-        }
-        userRole = role;
-      }
-
-      // Hash password
-      const hashedPassword = await bcrypt.hash(password, 10);
-
-      // Create new user with specified role
+      const hashed = await bcrypt.hash(password, 10);
+      const cleanGroups = await normalizeGroups(groups);
       const newUser = await userDAO.createUser({
-        fullName: fullName.trim(),
-        username: username.trim(),
-        password: hashedPassword,
-        role: userRole,
+        fullName: String(fullName).trim(),
+        username: String(username).trim(),
+        password: hashed,
+        email: String(email || '').trim(),
+        phone_number: String(phone_number || '').trim(),
+        role: 'user',
+        groups: cleanGroups,
+        managedGroups: [],
+        isActive: true,
       });
 
-      console.log('✅ New user registered:', newUser.username, 'Role:', userRole);
-
-      // Generate JWT token
-      const token = jwt.sign(
-        {
-          id: newUser.username,
-          username: newUser.username,
-          role: newUser.role,
-        },
-        JWT_SECRET,
-        { expiresIn: JWT_EXPIRES_IN }
-      );
-
-      res.status(201).json({
+      const token = buildToken(newUser);
+      return res.status(201).json({
         success: true,
-        message: 'Account created successfully',
+        message: 'Signup berhasil',
         token,
         user: {
-          id: newUser.username,
-          fullName: newUser.fullName,
           username: newUser.username,
+          fullName: newUser.fullName,
           role: newUser.role,
+          groups: newUser.groups,
         },
       });
     } catch (error) {
-      console.error('❌ Sign up error:', error);
-      res.status(500).json({
-        success: false,
-        error: 'Server error during sign up',
-      });
+      return res.status(400).json({ success: false, error: error.message });
     }
   }
 
-  // Login
   async login(req, res) {
     try {
       const { username, password } = req.body;
-
-      // Validation
       if (!username || !password) {
-        return res.status(400).json({
-          success: false,
-          error: 'Username and password are required',
-        });
+        return res.status(400).json({ success: false, error: 'username dan password wajib' });
       }
 
-      // Find user by username
-      const user = await userDAO.findByUsername(username);
-      
+      const user = await userDAO.findByUsername(String(username).trim());
       if (!user) {
-        return res.status(401).json({
-          success: false,
-          error: 'Invalid credentials',
-        });
+        return res.status(401).json({ success: false, error: 'Username/password salah' });
       }
 
-      // Verify password
-      const passwordValid = await bcrypt.compare(password, user.password);
-
-      if (!passwordValid) {
-        return res.status(401).json({
-          success: false,
-          error: 'Invalid credentials',
-        });
+      const ok = await bcrypt.compare(password, user.password);
+      if (!ok) {
+        return res.status(401).json({ success: false, error: 'Username/password salah' });
       }
 
-      // Generate JWT token
-      const token = jwt.sign(
-        {
-          id: user.username,
-          username: user.username,
-          role: user.role,
-        },
-        JWT_SECRET,
-        { expiresIn: JWT_EXPIRES_IN }
-      );
-
-      console.log('✅ User logged in:', user.username, 'Role:', user.role);
-
-      res.status(200).json({
+      const token = buildToken(user);
+      return res.status(200).json({
         success: true,
-        message: 'Login successful',
+        message: 'Login berhasil',
         token,
         user: {
-          id: user.username,
-          fullName: user.fullName,
           username: user.username,
+          fullName: user.fullName,
           role: user.role,
+          groups: user.groups || [],
+          managedGroups: user.managedGroups || [],
         },
       });
     } catch (error) {
-      console.error('❌ Login error:', error);
-      res.status(500).json({
-        success: false,
-        error: 'Server error during login',
-      });
+      return res.status(500).json({ success: false, error: error.message });
     }
   }
 
-  // Get Profile
   async getProfile(req, res) {
+    const user = await userDAO.findByUsername(req.user.username);
+    if (!user) {
+      return res.status(404).json({ success: false, error: 'User tidak ditemukan' });
+    }
+    return res.status(200).json({
+      success: true,
+      user: {
+        username: user.username,
+        fullName: user.fullName,
+        email: user.email || '',
+        phone_number: user.phone_number || '',
+        role: user.role,
+        groups: user.groups || [],
+        managedGroups: user.managedGroups || [],
+        createdAt: user.createdAt,
+      },
+    });
+  }
+
+  async setupSuperAdmin(req, res) {
     try {
-      const userId = req.user.id;
+      const providedKey = req.headers['x-setup-key'] || req.body.setupKey;
+      const expectedKey = process.env.SUPER_ADMIN_SETUP_KEY;
+      if (!expectedKey) {
+        return res.status(500).json({ success: false, error: 'SUPER_ADMIN_SETUP_KEY belum diset' });
+      }
+      if (providedKey !== expectedKey) {
+        return res.status(403).json({ success: false, error: 'Setup key salah' });
+      }
 
-      const user = await userDAO.findById(userId);
+      const { username, fullName, password, email = '', phone_number = '' } = req.body;
+      if (!username || !fullName || !password) {
+        return res.status(400).json({ success: false, error: 'username, fullName, password wajib' });
+      }
 
-      if (!user) {
-        return res.status(404).json({
-          success: false,
-          error: 'User not found',
+      const existing = await userDAO.findByUsername(username);
+      const allGroups = await getBootstrapManagedGroups(username);
+      if (existing) {
+        const updated = await userDAO.updateUser(username, {
+          role: 'super_admin',
+          managedGroups: allGroups,
+          groups: [],
+          isActive: true,
+          email: String(email || existing.email || '').trim(),
+          phone_number: String(phone_number || existing.phone_number || '').trim(),
+          fullName: String(fullName || existing.fullName).trim(),
+        });
+        const token = buildToken(updated);
+        return res.status(200).json({
+          success: true,
+          message: 'User existing dipromosikan jadi super_admin',
+          token,
+          user: { username: updated.username, role: updated.role, managedGroups: updated.managedGroups },
         });
       }
 
-      res.status(200).json({
+      const hashed = await bcrypt.hash(password, 10);
+      const created = await userDAO.createUser({
+        fullName: String(fullName).trim(),
+        username: String(username).trim(),
+        password: hashed,
+        email: String(email || '').trim(),
+        phone_number: String(phone_number || '').trim(),
+        role: 'super_admin',
+        groups: [],
+        managedGroups: allGroups,
+        isActive: true,
+      });
+
+      const token = buildToken(created);
+      return res.status(201).json({
         success: true,
-        user: {
-          id: user.username,
-          fullName: user.fullName,
-          username: user.username,
-          role: user.role,
-          createdAt: user.createdAt,
-        },
+        message: 'Super admin berhasil dibuat',
+        token,
+        user: { username: created.username, role: created.role, managedGroups: created.managedGroups },
       });
     } catch (error) {
-      console.error('❌ Get profile error:', error);
-      res.status(500).json({
-        success: false,
-        error: 'Server error while fetching profile',
-      });
+      return res.status(400).json({ success: false, error: error.message });
     }
   }
 
-  // Update Profile
-  async updateProfile(req, res) {
+  async setUserRole(req, res) {
     try {
-      const userId = req.user.id;
-      const { fullName } = req.body;
+      const { username } = req.params;
+      const { role, groups = [], managedGroups = [] } = req.body;
 
-      if (!fullName) {
-        return res.status(400).json({
-          success: false,
-          error: 'Full name is required',
-        });
+      if (!VALID_ROLES.includes(role)) {
+        return res.status(400).json({ success: false, error: 'Role tidak valid' });
       }
 
-      const updateData = {
-        fullName: fullName.trim()
+      const existing = await userDAO.findByUsername(username);
+      if (!existing) {
+        return res.status(404).json({ success: false, error: 'User tidak ditemukan' });
+      }
+
+      if (req.user.role !== 'super_admin' && role === 'super_admin') {
+        return res.status(403).json({ success: false, error: 'Hanya super_admin yang bisa set super_admin' });
+      }
+
+      const cleanUserGroups = await normalizeGroups(groups);
+      const cleanManagedGroups = await normalizeGroups(managedGroups);
+      const patch = {
+        role,
+        groups: role === 'user' ? cleanUserGroups : [],
+        managedGroups: role === 'admin' || role === 'super_admin' ? cleanManagedGroups : [],
       };
 
-      const updatedUser = await userDAO.updateUser(userId, updateData);
-
-      res.status(200).json({
+      const updated = await userDAO.updateUser(username, patch);
+      return res.status(200).json({
         success: true,
-        message: 'Profile updated successfully',
+        message: 'Role user diupdate',
         user: {
-          id: updatedUser.username,
-          fullName: updatedUser.fullName,
-          username: updatedUser.username,
-          role: updatedUser.role,
+          username: updated.username,
+          role: updated.role,
+          groups: updated.groups || [],
+          managedGroups: updated.managedGroups || [],
         },
       });
     } catch (error) {
-      console.error('❌ Update profile error:', error);
-      res.status(500).json({
-        success: false,
-        error: 'Server error while updating profile',
-      });
+      return res.status(500).json({ success: false, error: error.message });
     }
   }
 
-  // Change Password
-  async changePassword(req, res) {
-    try {
-      const userId = req.user.id;
-      const { currentPassword, newPassword } = req.body;
-
-      if (!currentPassword || !newPassword) {
-        return res.status(400).json({
-          success: false,
-          error: 'Current and new password are required',
-        });
-      }
-
-      if (newPassword.length < 6) {
-        return res.status(400).json({
-          success: false,
-          error: 'New password must be at least 6 characters',
-        });
-      }
-
-      const user = await userDAO.findById(userId);
-
-      if (!user) {
-        return res.status(404).json({
-          success: false,
-          error: 'User not found',
-        });
-      }
-
-      // Verify current password
-      const passwordValid = await bcrypt.compare(currentPassword, user.password);
-
-      if (!passwordValid) {
-        return res.status(401).json({
-          success: false,
-          error: 'Current password is incorrect',
-        });
-      }
-
-      // Hash new password
-      const hashedPassword = await bcrypt.hash(newPassword, 10);
-
-      await userDAO.updateUser(userId, { password: hashedPassword });
-
-      res.status(200).json({
-        success: true,
-        message: 'Password changed successfully',
-      });
-    } catch (error) {
-      console.error('❌ Change password error:', error);
-      res.status(500).json({
-        success: false,
-        error: 'Server error while changing password',
-      });
-    }
-  }
-
-  // Admin Only: Update User Role (Manual Upgrade/Downgrade)
-  async updateUserRole(req, res) {
-    try {
-      const { username } = req.params;
-      const { role } = req.body;
-
-      // Validate role
-      if (!role || !Object.values(USER_ROLES).includes(role)) {
-        return res.status(400).json({
-          success: false,
-          error: 'Invalid role. Must be: admin, user, or paid_user',
-        });
-      }
-
-      const user = await userDAO.findByUsername(username);
-
-      if (!user) {
-        return res.status(404).json({
-          success: false,
-          error: 'User not found',
-        });
-      }
-
-      // Prevent admin from changing their own role
-      if (username === req.user.username) {
-        return res.status(400).json({
-          success: false,
-          error: 'You cannot change your own role',
-        });
-      }
-
-      const updatedUser = await userDAO.updateUser(username, { role });
-
-      console.log('✅ User role updated by admin:', username, '→', role);
-
-      res.status(200).json({
-        success: true,
-        message: `User role updated to ${role} successfully`,
-        user: {
-          id: updatedUser.username,
-          fullName: updatedUser.fullName,
-          username: updatedUser.username,
-          role: updatedUser.role,
-        },
-      });
-    } catch (error) {
-      console.error('❌ Update role error:', error);
-      res.status(500).json({
-        success: false,
-        error: 'Server error while updating user role',
-      });
-    }
-  }
-
-  // Admin Only: Get All Users
   async getAllUsers(req, res) {
     try {
-      const users = await userDAO.getAllUsers();
-      
-      // Convert object to array and remove passwords
-      const userList = Object.keys(users).map(username => ({
-        id: username,
-        fullName: users[username].fullName,
-        username: username,
-        role: users[username].role,
-        createdAt: users[username].createdAt,
+      const raw = await userDAO.getAllUsers();
+      const users = Object.entries(raw).map(([username, value]) => ({
+        username,
+        fullName: value.fullName,
+        email: value.email || '',
+        phone_number: value.phone_number || '',
+        role: value.role,
+        groups: value.groups || [],
+        managedGroups: value.managedGroups || [],
+        isActive: value.isActive !== false,
+        createdAt: value.createdAt || null,
       }));
-
-      res.status(200).json({
-        success: true,
-        count: userList.length,
-        users: userList,
-      });
+      return res.status(200).json({ success: true, count: users.length, users });
     } catch (error) {
-      console.error('❌ Get all users error:', error);
-      res.status(500).json({
-        success: false,
-        error: 'Server error while fetching users',
-      });
-    }
-  }
-
-  // Admin Only: Delete User
-  async deleteUser(req, res) {
-    try {
-      const { username } = req.params;
-
-      // Prevent admin from deleting themselves
-      if (username === req.user.username) {
-        return res.status(400).json({
-          success: false,
-          error: 'You cannot delete your own account',
-        });
-      }
-
-      const user = await userDAO.findByUsername(username);
-
-      if (!user) {
-        return res.status(404).json({
-          success: false,
-          error: 'User not found',
-        });
-      }
-
-      await userDAO.deleteUser(username);
-
-      console.log('✅ User deleted by admin:', username);
-
-      res.status(200).json({
-        success: true,
-        message: 'User deleted successfully',
-      });
-    } catch (error) {
-      console.error('❌ Delete user error:', error);
-      res.status(500).json({
-        success: false,
-        error: 'Server error while deleting user',
-      });
+      return res.status(500).json({ success: false, error: error.message });
     }
   }
 }

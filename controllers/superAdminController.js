@@ -1,0 +1,184 @@
+const { auth, db } = require('../config/firebase');
+const { normalizeGroups } = require('../middlewares/authorization');
+
+// ⚠️  SETUP KEY — set di .env sebagai SUPER_ADMIN_SETUP_KEY
+// Endpoint ini TIDAK pakai firebaseAuth biasa, tapi pakai secret key statis
+// supaya bisa diakses sebelum ada super_admin pertama.
+// Setelah super_admin pertama dibuat, endpoint ini tetap aman karena butuh key.
+const SETUP_KEY = process.env.SUPER_ADMIN_SETUP_KEY;
+
+class SuperAdminController {
+  /**
+   * POST /api/super-admin/setup
+   * Buat atau promote user menjadi super_admin.
+   * Diamankan dengan SUPER_ADMIN_SETUP_KEY di header X-Setup-Key.
+   * Tidak butuh Firebase auth token — justru karena belum ada super_admin sama sekali.
+   */
+  async createSuperAdmin(req, res) {
+    try {
+      // Validasi setup key
+      const providedKey = req.headers['x-setup-key'];
+      if (!SETUP_KEY) {
+        return res.status(500).json({
+          success: false,
+          error: 'SUPER_ADMIN_SETUP_KEY is not configured on the server',
+        });
+      }
+      if (!providedKey || providedKey !== SETUP_KEY) {
+        return res.status(401).json({
+          success: false,
+          error: 'Invalid or missing X-Setup-Key header',
+        });
+      }
+
+      const { uid, email, name, phone_number } = req.body;
+      if (!uid && !email) {
+        return res.status(400).json({ success: false, error: 'uid or email is required' });
+      }
+
+      let userRecord;
+      if (uid) {
+        userRecord = await auth.getUser(uid);
+      } else {
+        userRecord = await auth.getUserByEmail(email);
+      }
+
+      const userUid = userRecord.uid;
+      const now = new Date().toISOString();
+
+      await db.collection('users').doc(userUid).set(
+        {
+          name: name || userRecord.displayName || '',
+          email: userRecord.email || email || '',
+          phone_number: phone_number || userRecord.phoneNumber || '',
+          role: 'super_admin',
+          groups: [],
+          managed_groups: [],
+          is_active: true,
+          updated_at: now,
+          created_at: now,
+        },
+        { merge: true }
+      );
+
+      await auth.setCustomUserClaims(userUid, {
+        role: 'super_admin',
+        managed_groups: [],
+      });
+
+      return res.status(200).json({
+        success: true,
+        message: 'Super admin created. Ask the user to re-login to refresh their token.',
+        data: { uid: userUid, role: 'super_admin' },
+      });
+    } catch (error) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  }
+
+  /**
+   * POST /api/super-admin/admins
+   * Buat atau promote user menjadi admin.
+   */
+  async createOrPromoteAdmin(req, res) {
+    try {
+      const { uid, email, name, phone_number, managed_groups = [] } = req.body;
+
+      if (!uid && !email) {
+        return res.status(400).json({ success: false, error: 'uid or email is required' });
+      }
+
+      let userRecord;
+      if (uid) {
+        userRecord = await auth.getUser(uid);
+      } else {
+        userRecord = await auth.getUserByEmail(email);
+      }
+
+      const cleanManagedGroups = normalizeGroups(managed_groups);
+      const userUid = userRecord.uid;
+      const now = new Date().toISOString();
+
+      await db.collection('users').doc(userUid).set(
+        {
+          name: name || userRecord.displayName || '',
+          email: userRecord.email || email || '',
+          phone_number: phone_number || userRecord.phoneNumber || '',
+          role: 'admin',
+          groups: [],
+          managed_groups: cleanManagedGroups,
+          is_active: true,
+          updated_at: now,
+          created_at: now,
+        },
+        { merge: true }
+      );
+
+      await auth.setCustomUserClaims(userUid, {
+        role: 'admin',
+        managed_groups: cleanManagedGroups,
+      });
+
+      return res.status(200).json({
+        success: true,
+        message: 'Admin account updated',
+        data: { uid: userUid, role: 'admin', managed_groups: cleanManagedGroups },
+      });
+    } catch (error) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  }
+
+  /**
+   * PATCH /api/super-admin/admins/:uid/permissions
+   * Update permissions admin yang sudah ada.
+   */
+  async setAdminPermissions(req, res) {
+    try {
+      const { uid } = req.params;
+      const { managed_groups = [], is_active } = req.body;
+      const cleanManagedGroups = normalizeGroups(managed_groups);
+
+      const ref = db.collection('users').doc(uid);
+      const snap = await ref.get();
+      if (!snap.exists) {
+        return res.status(404).json({ success: false, error: 'Admin not found' });
+      }
+
+      const existing = snap.data();
+      if (existing.role !== 'admin') {
+        return res.status(400).json({ success: false, error: 'Target user is not admin' });
+      }
+
+      await ref.update({
+        managed_groups: cleanManagedGroups,
+        is_active: typeof is_active === 'boolean' ? is_active : existing.is_active,
+        updated_at: new Date().toISOString(),
+      });
+
+      await auth.setCustomUserClaims(uid, {
+        role: 'admin',
+        managed_groups: cleanManagedGroups,
+      });
+
+      await db.collection('admin_permissions').doc(uid).set(
+        {
+          admin_id: uid,
+          manage_ranting: cleanManagedGroups.includes('ranting'),
+          manage_pemuda: cleanManagedGroups.includes('pemuda'),
+          updated_at: new Date().toISOString(),
+        },
+        { merge: true }
+      );
+
+      return res.status(200).json({
+        success: true,
+        message: 'Admin permissions updated',
+      });
+    } catch (error) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  }
+}
+
+module.exports = new SuperAdminController();

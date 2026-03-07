@@ -13,6 +13,7 @@ package-lock.json
 # Firebase service account (JANGAN di-upload ke GitHub!)
 serviceAccountKey.json
 firebase-key.json
+firebase-config.json
 
 # Logs
 *.log

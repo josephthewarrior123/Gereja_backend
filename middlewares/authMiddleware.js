@@ -1,70 +1,38 @@
 const jwt = require('jsonwebtoken');
 const userDAO = require('../dao/userDAO');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
+const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret';
 
-const authMiddleware = async (req, res, next) => {
+async function authMiddleware(req, res, next) {
   try {
-    const authHeader = req.headers.authorization;
-
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({
-        success: false,
-        error: 'No token provided',
-      });
+    const authHeader = req.headers.authorization || '';
+    if (!authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ success: false, error: 'No token provided' });
     }
 
-    const token = authHeader.split('Bearer ')[1];
-
-    // Verify JWT token
+    const token = authHeader.substring(7);
     const decoded = jwt.verify(token, JWT_SECRET);
-    
-    // Debug: log decoded token
-    console.log('🔐 Decoded token payload:', decoded);
-
-    // Get user from database
-    const user = await userDAO.findById(decoded.id);
+    const user = await userDAO.findByUsername(decoded.username);
 
     if (!user) {
-      return res.status(404).json({
-        success: false,
-        error: 'User not found',
-      });
+      return res.status(401).json({ success: false, error: 'User not found' });
     }
 
-    // ⭐⭐⭐ PERBAIKAN DI SINI ⭐⭐⭐
-    // Attach user to request object DENGAN ROLE
+    if (user.isActive === false) {
+      return res.status(403).json({ success: false, error: 'User inactive' });
+    }
+
     req.user = {
       id: user.id,
       username: user.username,
-      role: user.role, // <-- TAMBAHKAN INI!
+      role: user.role,
+      groups: Array.isArray(user.groups) ? user.groups : [],
+      managedGroups: Array.isArray(user.managedGroups) ? user.managedGroups : [],
     };
-    
-    console.log('✅ Auth middleware passed for user:', req.user.username, 'Role:', req.user.role);
-
-    next();
+    return next();
   } catch (error) {
-    console.error('❌ Auth middleware error:', error);
-    
-    if (error.name === 'JsonWebTokenError') {
-      return res.status(401).json({
-        success: false,
-        error: 'Invalid token',
-      });
-    }
-    
-    if (error.name === 'TokenExpiredError') {
-      return res.status(401).json({
-        success: false,
-        error: 'Token expired',
-      });
-    }
-
-    return res.status(500).json({
-      success: false,
-      error: 'Authentication failed',
-    });
+    return res.status(401).json({ success: false, error: 'Invalid token' });
   }
-};
+}
 
 module.exports = authMiddleware;

@@ -1,0 +1,105 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function role() {
+      return request.auth.token.role;
+    }
+
+    function managedGroups() {
+      return request.auth.token.managed_groups;
+    }
+
+    function isSuperAdmin() {
+      return signedIn() && role() == "super_admin";
+    }
+
+    function isAdmin() {
+      return signedIn() && role() == "admin";
+    }
+
+    function isUser() {
+      return signedIn() && role() == "user";
+    }
+
+    function canManageGroup(group) {
+      return isSuperAdmin() || (isAdmin() && managedGroups().hasAny([group]));
+    }
+
+    function targetUser(uid) {
+      return get(/databases/$(database)/documents/users/$(uid)).data;
+    }
+
+    function canManageUser(uid) {
+      let target = targetUser(uid);
+      return isSuperAdmin()
+        || (isAdmin() && (
+          (target.groups.hasAny(["ranting"]) && managedGroups().hasAny(["ranting"])) ||
+          (target.groups.hasAny(["pemuda"]) && managedGroups().hasAny(["pemuda"]))
+        ));
+    }
+
+    match /users/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || canManageUser(uid));
+      allow create: if isSuperAdmin() || (isAdmin() && request.resource.data.role == "user");
+      allow update: if signedIn() && (
+        isSuperAdmin() ||
+        (request.auth.uid == uid &&
+          request.resource.data.role == resource.data.role &&
+          request.resource.data.groups == resource.data.groups &&
+          request.resource.data.managed_groups == resource.data.managed_groups
+        ) ||
+        canManageUser(uid)
+      );
+      allow delete: if isSuperAdmin();
+    }
+
+    match /admin_permissions/{adminId} {
+      allow read: if signedIn() && (request.auth.uid == adminId || isSuperAdmin());
+      allow write: if isSuperAdmin();
+    }
+
+    match /activities/{activityId} {
+      allow read: if signedIn();
+      allow create, update, delete: if isSuperAdmin() || isAdmin();
+    }
+
+    match /journal_entries/{entryId} {
+      allow read: if signedIn() && (
+        resource.data.user_id == request.auth.uid ||
+        isSuperAdmin() ||
+        (isAdmin() && (
+          (resource.data.user_groups.hasAny(["ranting"]) && managedGroups().hasAny(["ranting"])) ||
+          (resource.data.user_groups.hasAny(["pemuda"]) && managedGroups().hasAny(["pemuda"]))
+        ))
+      );
+
+      allow create: if signedIn()
+        && request.resource.data.user_id == request.auth.uid
+        && request.resource.data.submitted_by == request.auth.uid;
+
+      allow update, delete: if false;
+    }
+
+    match /points_ledger/{ledgerId} {
+      allow read: if signedIn() && (
+        resource.data.user_id == request.auth.uid || isAdmin() || isSuperAdmin()
+      );
+      allow write: if false;
+    }
+
+    match /user_stats/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || isAdmin() || isSuperAdmin());
+      allow write: if false;
+    }
+
+    match /bible_books/{bookId} {
+      allow read: if signedIn();
+      allow write: if isSuperAdmin();
+    }
+  }
+}
