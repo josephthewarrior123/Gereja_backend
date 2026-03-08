@@ -6,6 +6,9 @@ require('./config/firebase');
 
 const userRoutes = require('./routes/userRoutes');
 const groupRoutes = require('./routes/groupRoutes');
+const journalRoutes = require('./routes/journalRoutes');
+const adminRoutes = require('./routes/adminRoutes');
+const publicRoutes = require('./routes/publicRoutes');
 
 const app = express();
 
@@ -29,6 +32,12 @@ app.get('/', (req, res) => {
       profile: 'GET /api/users/profile',
       listGroups: 'GET /api/groups',
       createGroup: 'POST /api/groups',
+      listActivities: 'GET /api/activities',
+      submitEntry: 'POST /api/journal/entries',
+      myEntries: 'GET /api/journal/my-entries',
+      groupEntries: 'GET /api/journal/groups/:group/entries',
+      createActivity: 'POST /api/admin/activities',
+      updateActivity: 'PATCH /api/admin/activities/:activityId',
     },
   });
 });
@@ -43,6 +52,9 @@ app.get('/health', (req, res) => {
 
 app.use('/api', userRoutes);
 app.use('/api', groupRoutes);
+app.use('/api', publicRoutes);   // GET /api/activities, GET /api/me
+app.use('/api', journalRoutes);  // POST /api/journal/entries, GET /api/journal/my-entries, etc
+app.use('/api', adminRoutes);    // POST /api/admin/activities, PATCH /api/admin/activities/:id
 
 app.use((req, res) => {
   return res.status(404).json({
@@ -65,4 +77,3 @@ app.listen(PORT, () => {
 });
 
 module.exports = app;
-

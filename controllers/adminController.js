@@ -1,94 +1,62 @@
-const { auth, db } = require('../config/firebase');
-const { hasIntersection, normalizeGroups } = require('../middlewares/authorization');
+const { db } = require('../config/firebase');
 const { validateActivityFieldsConfig } = require('../utils/validators');
-const groupDAO = require('../dao/groupDAO');
+
+function toKey(name) {
+  return String(name || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+}
+
+function normalizeGroups(groups) {
+  if (!Array.isArray(groups)) return [];
+  return groups.map(toKey).filter(Boolean);
+}
+
+function hasIntersection(a, b) {
+  const setB = new Set(b);
+  return a.some((x) => setB.has(x));
+}
 
 class AdminController {
-  async upsertUser(req, res) {
-    try {
-      const { uid, email, name, phone_number, groups = [], role = 'user', is_active = true } = req.body;
-      if (!uid && !email) {
-        return res.status(400).json({ success: false, error: 'uid or email is required' });
-      }
-      if (!['user'].includes(role)) {
-        return res.status(400).json({ success: false, error: 'admin can only assign user role' });
-      }
-
-      let userRecord;
-      if (uid) {
-        userRecord = await auth.getUser(uid);
-      } else {
-        userRecord = await auth.getUserByEmail(email);
-      }
-
-      const targetUid = userRecord.uid;
-      const cleanGroups = normalizeGroups(groups);
-      if (!hasIntersection(cleanGroups, req.user.managed_groups)) {
-        return res.status(403).json({ success: false, error: 'No permission for selected groups' });
-      }
-
-      const now = new Date().toISOString();
-      await db.collection('users').doc(targetUid).set(
-        {
-          name: name || userRecord.displayName || '',
-          email: userRecord.email || email || '',
-          phone_number: phone_number || userRecord.phoneNumber || '',
-          role: 'user',
-          groups: cleanGroups,
-          managed_groups: [],
-          is_active,
-          updated_at: now,
-          created_at: now,
-        },
-        { merge: true }
-      );
-
-      await auth.setCustomUserClaims(targetUid, { role: 'user', managed_groups: [] });
-
-      return res.status(200).json({
-        success: true,
-        message: 'User saved',
-        data: { uid: targetUid, groups: cleanGroups, role: 'user' },
-      });
-    } catch (error) {
-      return res.status(500).json({ success: false, error: error.message });
-    }
+  constructor() {
+    this.activitiesRef = db.ref('activities');
   }
 
   async createActivity(req, res) {
     try {
       const { name, points, fields = [], groups = [], is_active = true } = req.body;
+
       if (!name || typeof name !== 'string') {
         return res.status(400).json({ success: false, error: 'name is required' });
       }
-      if (typeof points !== 'number' || points < 0) {
+      const parsedPoints = Number(points);
+      if (isNaN(parsedPoints) || parsedPoints < 0) {
         return res.status(400).json({ success: false, error: 'points must be a non-negative number' });
       }
-
-      const fieldsError = validateActivityFieldsConfig(fields);
-      if (fieldsError) {
-        return res.status(400).json({ success: false, error: fieldsError });
+      if (fields.length > 0) {
+        const fieldsError = validateActivityFieldsConfig(fields);
+        if (fieldsError) return res.status(400).json({ success: false, error: fieldsError });
       }
 
       const cleanGroups = normalizeGroups(groups);
       if (!cleanGroups.length) {
-        // ✅ FIX: Pesan error dinamis dari DB, tidak hardcode nama group
-        const activeGroups = await groupDAO.getActiveGroupKeys();
-        const groupList = activeGroups.length > 0 ? activeGroups.join(', ') : 'belum ada group aktif';
-        return res.status(400).json({ success: false, error: `groups harus berisi minimal satu group aktif: ${groupList}` });
+        return res.status(400).json({ success: false, error: 'Pilih minimal 1 group' });
       }
 
-      if (!hasIntersection(cleanGroups, req.user.managed_groups)) {
-        return res.status(403).json({ success: false, error: 'No permission for selected groups' });
+      if (req.user.role !== 'super_admin') {
+        const managedGroups = req.user.managedGroups || [];
+        if (!hasIntersection(cleanGroups, managedGroups)) {
+          return res.status(403).json({ success: false, error: 'No permission for selected groups' });
+        }
       }
 
-      const now = new Date().toISOString();
-      const doc = await db.collection('activities').add({
+      const now = Date.now();
+      const newRef = this.activitiesRef.push();
+      await newRef.set({
+        id: newRef.key,
         name: name.trim(),
-        points,
+        points: parsedPoints,
         fields,
         groups: cleanGroups,
-        created_by_admin: req.user.uid,
+        created_by_admin: req.user.username,
         is_active,
         created_at: now,
         updated_at: now,
@@ -97,9 +65,10 @@ class AdminController {
       return res.status(201).json({
         success: true,
         message: 'Activity created',
-        data: { id: doc.id },
+        data: { id: newRef.key },
       });
     } catch (error) {
+      console.error('[createActivity]', error);
       return res.status(500).json({ success: false, error: error.message });
     }
   }
@@ -108,31 +77,34 @@ class AdminController {
     try {
       const { activityId } = req.params;
       const { name, points, fields, groups, is_active } = req.body;
-      const ref = db.collection('activities').doc(activityId);
-      const snap = await ref.get();
 
-      if (!snap.exists) {
+      const ref = this.activitiesRef.child(activityId);
+      const snap = await ref.once('value');
+      if (!snap.exists()) {
         return res.status(404).json({ success: false, error: 'Activity not found' });
       }
 
-      const current = snap.data();
+      const current = snap.val();
       const nextGroups = groups ? normalizeGroups(groups) : current.groups;
-      if (!hasIntersection(nextGroups, req.user.managed_groups)) {
-        return res.status(403).json({ success: false, error: 'No permission for selected groups' });
+
+      if (req.user.role !== 'super_admin') {
+        const managedGroups = req.user.managedGroups || [];
+        if (!hasIntersection(nextGroups, managedGroups)) {
+          return res.status(403).json({ success: false, error: 'No permission for selected groups' });
+        }
       }
 
       if (fields) {
         const fieldsError = validateActivityFieldsConfig(fields);
-        if (fieldsError) {
-          return res.status(400).json({ success: false, error: fieldsError });
-        }
+        if (fieldsError) return res.status(400).json({ success: false, error: fieldsError });
       }
 
-      const patch = {
-        updated_at: new Date().toISOString(),
-      };
+      const patch = { updated_at: Date.now() };
       if (typeof name === 'string') patch.name = name.trim();
-      if (typeof points === 'number' && points >= 0) patch.points = points;
+      if (points !== undefined) {
+        const p = Number(points);
+        if (!isNaN(p) && p >= 0) patch.points = p;
+      }
       if (Array.isArray(fields)) patch.fields = fields;
       if (Array.isArray(groups)) patch.groups = nextGroups;
       if (typeof is_active === 'boolean') patch.is_active = is_active;
@@ -140,6 +112,7 @@ class AdminController {
       await ref.update(patch);
       return res.status(200).json({ success: true, message: 'Activity updated' });
     } catch (error) {
+      console.error('[updateActivity]', error);
       return res.status(500).json({ success: false, error: error.message });
     }
   }
