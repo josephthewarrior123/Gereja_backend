@@ -1,6 +1,7 @@
 const { auth, db } = require('../config/firebase');
 const { hasIntersection, normalizeGroups } = require('../middlewares/authorization');
 const { validateActivityFieldsConfig } = require('../utils/validators');
+const groupDAO = require('../dao/groupDAO');
 
 class AdminController {
   async upsertUser(req, res) {
@@ -71,7 +72,10 @@ class AdminController {
 
       const cleanGroups = normalizeGroups(groups);
       if (!cleanGroups.length) {
-        return res.status(400).json({ success: false, error: 'groups must contain ranting and/or pemuda' });
+        // ✅ FIX: Pesan error dinamis dari DB, tidak hardcode nama group
+        const activeGroups = await groupDAO.getActiveGroupKeys();
+        const groupList = activeGroups.length > 0 ? activeGroups.join(', ') : 'belum ada group aktif';
+        return res.status(400).json({ success: false, error: `groups harus berisi minimal satu group aktif: ${groupList}` });
       }
 
       if (!hasIntersection(cleanGroups, req.user.managed_groups)) {

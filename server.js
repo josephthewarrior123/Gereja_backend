@@ -5,6 +5,7 @@ const cors = require('cors');
 require('./config/firebase');
 
 const userRoutes = require('./routes/userRoutes');
+const groupRoutes = require('./routes/groupRoutes');
 
 const app = express();
 
@@ -41,6 +42,7 @@ app.get('/health', (req, res) => {
 });
 
 app.use('/api', userRoutes);
+app.use('/api', groupRoutes);
 
 app.use((req, res) => {
   return res.status(404).json({
@@ -63,3 +65,4 @@ app.listen(PORT, () => {
 });
 
 module.exports = app;
+

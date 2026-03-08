@@ -1,6 +1,7 @@
 const { db, FieldValue } = require('../config/firebase');
 const { hasIntersection } = require('../middlewares/authorization');
 const { validateEntryDataByConfig } = require('../utils/validators');
+const groupDAO = require('../dao/groupDAO');
 
 async function findBibleBook(bookValue) {
   if (!bookValue || typeof bookValue !== 'string') {
@@ -141,11 +142,14 @@ class JournalController {
   async getGroupEntries(req, res) {
     try {
       const { group } = req.params;
-      if (!['ranting', 'pemuda'].includes(group)) {
-        return res.status(400).json({ success: false, error: 'Invalid group' });
+
+      // ✅ FIX: Validasi group dari DB, tidak hardcode ['ranting', 'pemuda']
+      const activeGroupKeys = await groupDAO.getActiveGroupKeys();
+      if (!activeGroupKeys.includes(group)) {
+        return res.status(400).json({ success: false, error: `Invalid group. Valid groups: ${activeGroupKeys.join(', ')}` });
       }
 
-      if (req.user.role !== 'super_admin' && !(req.user.managed_groups || []).includes(group)) {
+      if (req.user.role !== 'super_admin' && !(req.user.managedGroups || req.user.managed_groups || []).includes(group)) {
         return res.status(403).json({ success: false, error: 'No access for this group' });
       }
 

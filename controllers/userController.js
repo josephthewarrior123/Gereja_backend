@@ -14,25 +14,16 @@ function normalizeGroupInput(groups) {
     .filter(Boolean);
 }
 
+// ✅ FIX: Tidak ada auto-seed hardcode — validasi murni dari DB
 async function normalizeGroups(groups) {
-  let activeKeys = await groupDAO.getActiveGroupKeys();
-  if (!activeKeys.length) {
-    await groupDAO.upsertGroup('ranting', 'system');
-    await groupDAO.upsertGroup('pemuda', 'system');
-    activeKeys = await groupDAO.getActiveGroupKeys();
-  }
+  const activeKeys = await groupDAO.getActiveGroupKeys();
   const active = new Set(activeKeys);
   return normalizeGroupInput(groups).filter((g) => active.has(g));
 }
 
-async function getBootstrapManagedGroups(actorUsername = null) {
-  let active = await groupDAO.getActiveGroupKeys();
-  if (!active.length) {
-    await groupDAO.upsertGroup('ranting', actorUsername);
-    await groupDAO.upsertGroup('pemuda', actorUsername);
-    active = await groupDAO.getActiveGroupKeys();
-  }
-  return active;
+// ✅ FIX: Super admin dapat semua group dari DB, tidak hardcode
+async function getAllActiveGroups() {
+  return await groupDAO.getActiveGroupKeys();
 }
 
 function buildToken(user) {
@@ -60,7 +51,11 @@ class UserController {
       }
 
       const hashed = await bcrypt.hash(password, 10);
-      const cleanGroups = await normalizeGroups(groups);
+
+      // ✅ FIX: Kalau groups kosong dari request, simpan array kosong saja
+      // Jangan auto-seed group apapun
+      const cleanGroups = groups.length > 0 ? await normalizeGroups(groups) : [];
+
       const newUser = await userDAO.createUser({
         fullName: String(fullName).trim(),
         username: String(username).trim(),
@@ -161,8 +156,10 @@ class UserController {
         return res.status(400).json({ success: false, error: 'username, fullName, password wajib' });
       }
 
+      // ✅ FIX: Ambil semua group aktif dari DB, tidak hardcode sama sekali
+      const allGroups = await getAllActiveGroups();
+
       const existing = await userDAO.findByUsername(username);
-      const allGroups = await getBootstrapManagedGroups(username);
       if (existing) {
         const updated = await userDAO.updateUser(username, {
           role: 'super_admin',
