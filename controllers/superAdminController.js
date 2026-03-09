@@ -1,22 +1,22 @@
 const { auth, db } = require('../config/firebase');
-const { normalizeGroups } = require('../middlewares/authorization');
 
-// ⚠️  SETUP KEY — set di .env sebagai SUPER_ADMIN_SETUP_KEY
-// Endpoint ini TIDAK pakai firebaseAuth biasa, tapi pakai secret key statis
-// supaya bisa diakses sebelum ada super_admin pertama.
-// Setelah super_admin pertama dibuat, endpoint ini tetap aman karena butuh key.
 const SETUP_KEY = process.env.SUPER_ADMIN_SETUP_KEY;
+
+function normalizeGroups(groups) {
+  if (!Array.isArray(groups)) return [];
+  return groups
+    .map((g) => String(g || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, ''))
+    .filter(Boolean);
+}
 
 class SuperAdminController {
   /**
    * POST /api/super-admin/setup
    * Buat atau promote user menjadi super_admin.
    * Diamankan dengan SUPER_ADMIN_SETUP_KEY di header X-Setup-Key.
-   * Tidak butuh Firebase auth token — justru karena belum ada super_admin sama sekali.
    */
   async createSuperAdmin(req, res) {
     try {
-      // Validasi setup key
       const providedKey = req.headers['x-setup-key'];
       if (!SETUP_KEY) {
         return res.status(500).json({
@@ -44,7 +44,7 @@ class SuperAdminController {
       }
 
       const userUid = userRecord.uid;
-      const now = new Date().toISOString();
+      const now     = new Date().toISOString();
 
       await db.collection('users').doc(userUid).set(
         {
@@ -97,7 +97,7 @@ class SuperAdminController {
 
       const cleanManagedGroups = normalizeGroups(managed_groups);
       const userUid = userRecord.uid;
-      const now = new Date().toISOString();
+      const now     = new Date().toISOString();
 
       await db.collection('users').doc(userUid).set(
         {
@@ -139,7 +139,7 @@ class SuperAdminController {
       const { managed_groups = [], is_active } = req.body;
       const cleanManagedGroups = normalizeGroups(managed_groups);
 
-      const ref = db.collection('users').doc(uid);
+      const ref  = db.collection('users').doc(uid);
       const snap = await ref.get();
       if (!snap.exists) {
         return res.status(404).json({ success: false, error: 'Admin not found' });
@@ -160,16 +160,6 @@ class SuperAdminController {
         role: 'admin',
         managed_groups: cleanManagedGroups,
       });
-
-      await db.collection('admin_permissions').doc(uid).set(
-        {
-          admin_id: uid,
-          manage_ranting: cleanManagedGroups.includes('ranting'),
-          manage_pemuda: cleanManagedGroups.includes('pemuda'),
-          updated_at: new Date().toISOString(),
-        },
-        { merge: true }
-      );
 
       return res.status(200).json({
         success: true,

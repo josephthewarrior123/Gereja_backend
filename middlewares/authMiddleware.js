@@ -3,6 +3,7 @@ const userDAO = require('../dao/userDAO');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret';
 
+// authMiddleware — JWT-based auth, user data diambil dari Firestore via userDAO
 async function authMiddleware(req, res, next) {
   try {
     const authHeader = req.headers.authorization || '';
@@ -10,10 +11,11 @@ async function authMiddleware(req, res, next) {
       return res.status(401).json({ success: false, error: 'No token provided' });
     }
 
-    const token = authHeader.substring(7);
+    const token   = authHeader.substring(7);
     const decoded = jwt.verify(token, JWT_SECRET);
-    const user = await userDAO.findByUsername(decoded.username);
 
+    // Selalu ambil dari Firestore supaya perubahan role/group langsung efektif
+    const user = await userDAO.findByUsername(decoded.username);
     if (!user) {
       return res.status(401).json({ success: false, error: 'User not found' });
     }
@@ -23,10 +25,10 @@ async function authMiddleware(req, res, next) {
     }
 
     req.user = {
-      id: user.id,
-      username: user.username,
-      role: user.role,
-      groups: Array.isArray(user.groups) ? user.groups : [],
+      id:            user.id,
+      username:      user.username,
+      role:          user.role,
+      groups:        Array.isArray(user.groups)        ? user.groups        : [],
       managedGroups: Array.isArray(user.managedGroups) ? user.managedGroups : [],
     };
     return next();

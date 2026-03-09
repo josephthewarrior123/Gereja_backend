@@ -3,14 +3,10 @@ const path = require('path');
 const admin = require('firebase-admin');
 
 function tryReadServiceAccountFromPath(rawPath) {
-  if (!rawPath) {
-    return null;
-  }
+  if (!rawPath) return null;
 
   const normalized = path.isAbsolute(rawPath) ? rawPath : path.join(process.cwd(), rawPath);
-  if (!fs.existsSync(normalized)) {
-    return null;
-  }
+  if (!fs.existsSync(normalized)) return null;
 
   return JSON.parse(fs.readFileSync(normalized, 'utf8'));
 }
@@ -55,7 +51,6 @@ function getCredential() {
 
 if (!admin.apps.length) {
   const credential = getCredential();
-  const databaseURL = process.env.FIREBASE_DATABASE_URL;
 
   if (!credential) {
     throw new Error(
@@ -63,17 +58,10 @@ if (!admin.apps.length) {
     );
   }
 
-  if (!databaseURL) {
-    throw new Error('FIREBASE_DATABASE_URL is required for Realtime Database.');
-  }
-
-  admin.initializeApp({
-    credential,
-    databaseURL,
-  });
+  admin.initializeApp({ credential });
 }
 
 const auth = admin.auth();
-const db = admin.database();
+const db   = admin.firestore();
 
 module.exports = { admin, auth, db };

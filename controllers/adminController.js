@@ -1,6 +1,8 @@
 const { db } = require('../config/firebase');
 const { validateActivityFieldsConfig } = require('../utils/validators');
 
+const COLLECTION = 'activities';
+
 function toKey(name) {
   return String(name || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
 }
@@ -16,8 +18,8 @@ function hasIntersection(a, b) {
 }
 
 class AdminController {
-  constructor() {
-    this.activitiesRef = db.ref('activities');
+  _col() {
+    return db.collection(COLLECTION);
   }
 
   async createActivity(req, res) {
@@ -48,10 +50,10 @@ class AdminController {
         }
       }
 
-      const now = Date.now();
-      const newRef = this.activitiesRef.push();
+      const now    = Date.now();
+      const newRef = this._col().doc();
       await newRef.set({
-        id: newRef.key,
+        id: newRef.id,
         name: name.trim(),
         points: parsedPoints,
         fields,
@@ -65,7 +67,7 @@ class AdminController {
       return res.status(201).json({
         success: true,
         message: 'Activity created',
-        data: { id: newRef.key },
+        data: { id: newRef.id },
       });
     } catch (error) {
       console.error('[createActivity]', error);
@@ -78,13 +80,13 @@ class AdminController {
       const { activityId } = req.params;
       const { name, points, fields, groups, is_active } = req.body;
 
-      const ref = this.activitiesRef.child(activityId);
-      const snap = await ref.once('value');
-      if (!snap.exists()) {
+      const ref  = this._col().doc(activityId);
+      const snap = await ref.get();
+      if (!snap.exists) {
         return res.status(404).json({ success: false, error: 'Activity not found' });
       }
 
-      const current = snap.val();
+      const current    = snap.data();
       const nextGroups = groups ? normalizeGroups(groups) : current.groups;
 
       if (req.user.role !== 'super_admin') {
@@ -105,8 +107,8 @@ class AdminController {
         const p = Number(points);
         if (!isNaN(p) && p >= 0) patch.points = p;
       }
-      if (Array.isArray(fields)) patch.fields = fields;
-      if (Array.isArray(groups)) patch.groups = nextGroups;
+      if (Array.isArray(fields))  patch.fields  = fields;
+      if (Array.isArray(groups))  patch.groups  = nextGroups;
       if (typeof is_active === 'boolean') patch.is_active = is_active;
 
       await ref.update(patch);

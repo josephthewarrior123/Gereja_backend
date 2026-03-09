@@ -1,14 +1,21 @@
 const { db } = require('../config/firebase');
 
+const COLLECTION = 'users';
+
 class UserDAO {
-  constructor() {
-    this.usersRef = db.ref('users');
+  _col() {
+    return db.collection(COLLECTION);
   }
 
   async findByUsername(username) {
-    const snap = await this.usersRef.child(username).once('value');
-    if (!snap.exists()) return null;
-    return { id: username, ...snap.val() };
+    const snap = await this._col()
+      .where('username', '==', username)
+      .limit(1)
+      .get();
+
+    if (snap.empty) return null;
+    const doc = snap.docs[0];
+    return { id: doc.id, ...doc.data() };
   }
 
   async usernameExists(username) {
@@ -23,27 +30,27 @@ class UserDAO {
     }
 
     const now = Date.now();
-    const toSave = {
-      ...userData,
-      createdAt: now,
-      updatedAt: now,
-    };
+    const toSave = { ...userData, createdAt: now, updatedAt: now };
 
-    await this.usersRef.child(username).set(toSave);
+    // Pakai username sebagai doc ID supaya lookup by username tetap bisa pakai .doc(username)
+    const ref = this._col().doc(username);
+    await ref.set(toSave);
     return { id: username, ...toSave };
   }
 
   async updateUser(username, patch) {
-    await this.usersRef.child(username).update({
-      ...patch,
-      updatedAt: Date.now(),
-    });
+    const ref = this._col().doc(username);
+    await ref.update({ ...patch, updatedAt: Date.now() });
     return this.findByUsername(username);
   }
 
   async getAllUsers() {
-    const snap = await this.usersRef.once('value');
-    return snap.val() || {};
+    const snap = await this._col().get();
+    const result = {};
+    snap.docs.forEach((doc) => {
+      result[doc.id] = doc.data();
+    });
+    return result;
   }
 }
 

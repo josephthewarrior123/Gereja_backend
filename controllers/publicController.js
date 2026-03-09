@@ -1,15 +1,13 @@
 const { db } = require('../config/firebase');
 
+const COLLECTION = 'activities';
+
 function hasIntersection(a, b) {
   const setB = new Set(b);
   return a.some((x) => setB.has(x));
 }
 
 class PublicController {
-  constructor() {
-    this.activitiesRef = db.ref('activities');
-  }
-
   async getMe(req, res) {
     return res.status(200).json({
       success: true,
@@ -24,14 +22,15 @@ class PublicController {
 
   async listActivities(req, res) {
     try {
-      const snap = await this.activitiesRef.once('value');
-      const data = snap.val() || {};
+      // Hanya ambil activity yang aktif langsung dari Firestore
+      const snap = await db.collection(COLLECTION)
+        .where('is_active', '==', true)
+        .orderBy('created_at', 'desc')
+        .get();
 
-      const all = Object.entries(data).map(([id, val]) => ({ id, ...val }));
+      const all = snap.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
 
       const activities = all.filter((item) => {
-        // filter inactive
-        if (!item.is_active) return false;
         if (req.user.role === 'super_admin') return true;
         if (req.user.role === 'admin') {
           return hasIntersection(item.groups || [], req.user.managedGroups || []);

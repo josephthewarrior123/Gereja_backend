@@ -1,5 +1,8 @@
 const { db } = require('../config/firebase');
 
+// Firestore collection
+const COLLECTION = 'groups';
+
 function toKey(name) {
   return String(name || '')
     .trim()
@@ -9,32 +12,31 @@ function toKey(name) {
 }
 
 class GroupDAO {
-  constructor() {
-    this.groupsRef = db.ref('groups');
+  _col() {
+    return db.collection(COLLECTION);
   }
 
   async listGroups() {
-    const snap = await this.groupsRef.once('value');
-    const data = snap.val() || {};
-    return Object.entries(data).map(([id, value]) => ({
-      id,
-      name: value.name || id,
-      isActive: value.isActive !== false,
-      createdAt: value.createdAt || null,
-      createdBy: value.createdBy || null,
-      updatedAt: value.updatedAt || null,
+    const snap = await this._col().orderBy('createdAt', 'asc').get();
+    return snap.docs.map((doc) => ({
+      id: doc.id,
+      name: doc.data().name || doc.id,
+      isActive: doc.data().isActive !== false,
+      createdAt: doc.data().createdAt || null,
+      createdBy: doc.data().createdBy || null,
+      updatedAt: doc.data().updatedAt || null,
     }));
   }
 
   async getActiveGroupKeys() {
-    const groups = await this.listGroups();
-    return groups.filter((g) => g.isActive).map((g) => g.id);
+    const snap = await this._col().where('isActive', '==', true).get();
+    return snap.docs.map((doc) => doc.id);
   }
 
   async findById(id) {
-    const snap = await this.groupsRef.child(id).once('value');
-    if (!snap.exists()) return null;
-    return { id, ...snap.val() };
+    const doc = await this._col().doc(id).get();
+    if (!doc.exists) return null;
+    return { id: doc.id, ...doc.data() };
   }
 
   async upsertGroup(name, createdBy = null) {
@@ -42,23 +44,29 @@ class GroupDAO {
     if (!id) throw new Error('Nama group tidak valid');
 
     const now = Date.now();
-    const ref = this.groupsRef.child(id);
-    const snap = await ref.once('value');
+    const ref = this._col().doc(id);
+    const snap = await ref.get();
 
-    if (snap.exists()) {
+    if (snap.exists) {
       await ref.update({ name: String(name).trim(), isActive: true, updatedAt: now });
     } else {
-      await ref.set({ name: String(name).trim(), isActive: true, createdBy, createdAt: now, updatedAt: now });
+      await ref.set({
+        name: String(name).trim(),
+        isActive: true,
+        createdBy,
+        createdAt: now,
+        updatedAt: now,
+      });
     }
 
-    const fresh = await ref.once('value');
-    return { id, ...fresh.val() };
+    const fresh = await ref.get();
+    return { id, ...fresh.data() };
   }
 
   async updateGroup(id, { name }) {
-    const ref = this.groupsRef.child(id);
-    const snap = await ref.once('value');
-    if (!snap.exists()) throw new Error('Group tidak ditemukan');
+    const ref = this._col().doc(id);
+    const snap = await ref.get();
+    if (!snap.exists) throw new Error('Group tidak ditemukan');
 
     const patch = { updatedAt: Date.now() };
     if (name !== undefined) {
@@ -68,28 +76,28 @@ class GroupDAO {
     }
 
     await ref.update(patch);
-    const fresh = await ref.once('value');
-    return { id, ...fresh.val() };
+    const fresh = await ref.get();
+    return { id, ...fresh.data() };
   }
 
   // Soft delete — toggle isActive
   async setActive(id, isActive) {
-    const ref = this.groupsRef.child(id);
-    const snap = await ref.once('value');
-    if (!snap.exists()) throw new Error('Group tidak ditemukan');
+    const ref = this._col().doc(id);
+    const snap = await ref.get();
+    if (!snap.exists) throw new Error('Group tidak ditemukan');
 
     await ref.update({ isActive, updatedAt: Date.now() });
-    const fresh = await ref.once('value');
-    return { id, ...fresh.val() };
+    const fresh = await ref.get();
+    return { id, ...fresh.data() };
   }
 
   // Hard delete — hapus permanen
   async deleteGroup(id) {
-    const ref = this.groupsRef.child(id);
-    const snap = await ref.once('value');
-    if (!snap.exists()) throw new Error('Group tidak ditemukan');
+    const ref = this._col().doc(id);
+    const snap = await ref.get();
+    if (!snap.exists) throw new Error('Group tidak ditemukan');
 
-    await ref.remove();
+    await ref.delete();
     return { id };
   }
 }

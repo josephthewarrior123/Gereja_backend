@@ -3,9 +3,9 @@ const jwt = require('jsonwebtoken');
 const userDAO = require('../dao/userDAO');
 const groupDAO = require('../dao/groupDAO');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret';
+const JWT_SECRET    = process.env.JWT_SECRET || 'change-this-secret';
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
-const VALID_ROLES = ['super_admin', 'admin', 'user'];
+const VALID_ROLES   = ['super_admin', 'admin', 'user'];
 
 function normalizeGroupInput(groups) {
   if (!Array.isArray(groups)) return [];
@@ -14,16 +14,14 @@ function normalizeGroupInput(groups) {
     .filter(Boolean);
 }
 
-// ✅ FIX: Tidak ada auto-seed hardcode — validasi murni dari DB
 async function normalizeGroups(groups) {
   const activeKeys = await groupDAO.getActiveGroupKeys();
   const active = new Set(activeKeys);
   return normalizeGroupInput(groups).filter((g) => active.has(g));
 }
 
-// ✅ FIX: Super admin dapat semua group dari DB, tidak hardcode
 async function getAllActiveGroups() {
-  return await groupDAO.getActiveGroupKeys();
+  return groupDAO.getActiveGroupKeys();
 }
 
 function buildToken(user) {
@@ -50,10 +48,7 @@ class UserController {
         return res.status(400).json({ success: false, error: 'password minimal 6 karakter' });
       }
 
-      const hashed = await bcrypt.hash(password, 10);
-
-      // ✅ FIX: Kalau groups kosong dari request, simpan array kosong saja
-      // Jangan auto-seed group apapun
+      const hashed     = await bcrypt.hash(password, 10);
       const cleanGroups = groups.length > 0 ? await normalizeGroups(groups) : [];
 
       const newUser = await userDAO.createUser({
@@ -156,10 +151,9 @@ class UserController {
         return res.status(400).json({ success: false, error: 'username, fullName, password wajib' });
       }
 
-      // ✅ FIX: Ambil semua group aktif dari DB, tidak hardcode sama sekali
       const allGroups = await getAllActiveGroups();
+      const existing  = await userDAO.findByUsername(username);
 
-      const existing = await userDAO.findByUsername(username);
       if (existing) {
         const updated = await userDAO.updateUser(username, {
           role: 'super_admin',
@@ -179,7 +173,7 @@ class UserController {
         });
       }
 
-      const hashed = await bcrypt.hash(password, 10);
+      const hashed  = await bcrypt.hash(password, 10);
       const created = await userDAO.createUser({
         fullName: String(fullName).trim(),
         username: String(username).trim(),
@@ -222,11 +216,11 @@ class UserController {
         return res.status(403).json({ success: false, error: 'Hanya super_admin yang bisa set super_admin' });
       }
 
-      const cleanUserGroups = await normalizeGroups(groups);
+      const cleanUserGroups    = await normalizeGroups(groups);
       const cleanManagedGroups = await normalizeGroups(managedGroups);
       const patch = {
         role,
-        groups: role === 'user' ? cleanUserGroups : [],
+        groups:        role === 'user'                            ? cleanUserGroups    : [],
         managedGroups: role === 'admin' || role === 'super_admin' ? cleanManagedGroups : [],
       };
 
@@ -248,7 +242,7 @@ class UserController {
 
   async getAllUsers(req, res) {
     try {
-      const raw = await userDAO.getAllUsers();
+      const raw   = await userDAO.getAllUsers();
       const users = Object.entries(raw).map(([username, value]) => ({
         username,
         fullName: value.fullName,

@@ -1,5 +1,7 @@
 const { auth, db } = require('../config/firebase');
 
+// firebaseAuth — Firebase ID Token auth (dipakai untuk superAdminRoutes)
+// User data diambil dari Firestore collection 'users'
 async function firebaseAuth(req, res, next) {
   try {
     const authHeader = req.headers.authorization || '';
@@ -23,10 +25,11 @@ async function firebaseAuth(req, res, next) {
 
     req.auth = decoded;
     req.user = {
-      uid: decoded.uid,
-      email: decoded.email || profile.email || null,
-      role: profile.role,
-      groups: Array.isArray(profile.groups) ? profile.groups : [],
+      uid:            decoded.uid,
+      email:          decoded.email || profile.email || null,
+      role:           profile.role,
+      groups:         Array.isArray(profile.groups)         ? profile.groups         : [],
+      managedGroups:  Array.isArray(profile.managed_groups) ? profile.managed_groups : [],
       managed_groups: Array.isArray(profile.managed_groups) ? profile.managed_groups : [],
       profile,
     };
