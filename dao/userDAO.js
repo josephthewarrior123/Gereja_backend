@@ -52,6 +52,12 @@ class UserDAO {
     });
     return result;
   }
+
+  async deleteUser(username) {
+    const ref = this._col().doc(username);
+    await ref.delete();
+    return true;
+  }
 }
 
 module.exports = new UserDAO();
