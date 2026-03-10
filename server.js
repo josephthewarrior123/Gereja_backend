@@ -10,6 +10,7 @@ const journalRoutes = require('./routes/journalRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const publicRoutes = require('./routes/publicRoutes');
 const leaderboardRoutes = require('./routes/leaderboardRoutes');
+const authRoutes = require('./routes/authRoutes');
 
 const app = express();
 
@@ -50,13 +51,14 @@ app.get('/health', (req, res) => {
     timestamp: new Date().toISOString(),
   });
 });
-
+app.use('/api', authRoutes);
 app.use('/api', userRoutes);
 app.use('/api', groupRoutes);
 app.use('/api', publicRoutes);   // GET /api/activities, GET /api/me
 app.use('/api', journalRoutes);  // POST /api/journal/entries, GET /api/journal/my-entries, etc
 app.use('/api', adminRoutes);    // POST /api/admin/activities, PATCH /api/admin/activities/:id
 app.use('/api', leaderboardRoutes); // GET /api/leaderboard, GET /api/leaderboard/:group
+
 
 app.use((req, res) => {
   return res.status(404).json({
