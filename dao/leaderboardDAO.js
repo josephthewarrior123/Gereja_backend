@@ -48,6 +48,49 @@ class LeaderboardDAO {
     });
   }
 
+  async getGroupTop3(group) {
+    // 1. Ambil semua users di grup
+    const usersSnap = await db.collection(USERS)
+      .where('groups', 'array-contains', group)
+      .get();
+
+    if (usersSnap.empty) return [];
+
+    const usersMap = {};
+    const userIds = [];
+    usersSnap.forEach(doc => {
+      usersMap[doc.id] = doc.data();
+      userIds.push(doc.id);
+    });
+
+    // 2. Ambil stats batch
+    const statsMap = {};
+    for (let i = 0; i < userIds.length; i += 30) {
+      const batchIds = userIds.slice(i, i + 30);
+      const statsSnap = await db.collection(USER_STATS).where('__name__', 'in', batchIds).get();
+      statsSnap.forEach(doc => {
+        statsMap[doc.id] = doc.data();
+      });
+    }
+
+    // 3. Sort di memory, ambil top 3
+    return userIds
+      .map(uid => {
+        const stat = statsMap[uid] || {};
+        const user = usersMap[uid];
+        return {
+          username: uid,
+          fullName: user.fullName || 'Unknown',
+          total_points: stat.total_points || 0,
+          entry_count: stat.entry_count || 0,
+          groups: user.groups || []
+        };
+      })
+      .sort((a, b) => b.total_points - a.total_points)
+      .slice(0, 3)
+      .map((user, index) => ({ rank: index + 1, ...user }));
+  }
+
   async getGroupLeaderboard(group, limit = 100) {
     // 1. Ambil semua users di dalam grup tersebut
     const usersSnap = await db.collection(USERS)

@@ -5,6 +5,7 @@ const authMiddleware = require('../middlewares/authMiddleware');
 const router = express.Router();
 
 router.get('/leaderboard', authMiddleware, (req, res) => leaderboardController.getGlobalLeaderboard(req, res));
+router.get('/leaderboard/:group/top3', authMiddleware, (req, res) => leaderboardController.getGroupTop3(req, res));
 router.get('/leaderboard/:group', authMiddleware, (req, res) => leaderboardController.getGroupLeaderboard(req, res));
 
 module.exports = router;
