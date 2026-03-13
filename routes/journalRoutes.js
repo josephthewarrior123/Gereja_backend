@@ -13,6 +13,17 @@ router.post(
   (req, res) => controller.submitEntry(req, res)
 );
 
+// Bulk award points for an activity to multiple users.
+// Bisa dipakai oleh:
+//  - super_admin / admin
+//  - user biasa yang sudah diberi permission khusus
+router.post(
+  '/journal/admin/bulk-award',
+  authMiddleware,
+  requireRole('user', 'admin', 'super_admin'),
+  (req, res) => controller.bulkAward(req, res)
+);
+
 // Entry milik sendiri + filter group/activity/date + cursor pagination
 // GET /journal/my-entries?group=pemuda&activity_id=xxx&date_from=...&date_to=...&limit=50&cursor=...
 router.get(

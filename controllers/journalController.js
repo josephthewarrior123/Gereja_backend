@@ -1,6 +1,7 @@
 const { db } = require('../config/firebase');
 const { validateEntryDataByConfig } = require('../utils/validators');
 const groupDAO = require('../dao/groupDAO');
+const userDAO = require('../dao/userDAO');
 
 const ACTIVITIES   = 'activities';
 const ENTRIES      = 'journal_entries';
@@ -103,6 +104,155 @@ class JournalController {
       });
     } catch (error) {
       console.error('[submitEntry]', error);
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // POST /journal/admin/bulk-award
+  //
+  // Beri poin untuk sebuah activity ke banyak user sekaligus.
+  // Akses:
+  //   - super_admin: bisa untuk semua user (yang ada di group activity)
+  //   - admin: hanya untuk user yang ada di salah satu managedGroups-nya
+  //   - user biasa: hanya jika punya permissions.canBulkAward / allowedActivities
+  // ─────────────────────────────────────────────────────────────────────────────
+  async bulkAward(req, res) {
+    try {
+      const { activity_id, target_usernames = [], data = {}, timestamp } = req.body;
+
+      if (!activity_id) {
+        return res.status(400).json({ success: false, error: 'activity_id is required' });
+      }
+      if (!Array.isArray(target_usernames) || target_usernames.length === 0) {
+        return res.status(400).json({ success: false, error: 'target_usernames must be a non-empty array' });
+      }
+
+      // Load activity
+      const actDoc = await db.collection(ACTIVITIES).doc(activity_id).get();
+      if (!actDoc.exists) {
+        return res.status(404).json({ success: false, error: 'Activity not found' });
+      }
+      const activity = actDoc.data();
+      if (!activity.is_active) {
+        return res.status(400).json({ success: false, error: 'Activity is inactive' });
+      }
+
+      const caller       = req.user;
+      const permissions  = caller.permissions || {};
+      const isSuperAdmin = caller.role === 'super_admin';
+      const isAdmin      = caller.role === 'admin';
+
+      const allowedActivities = Array.isArray(permissions.allowedActivities) ? permissions.allowedActivities : [];
+      const canBulkAward      = permissions.canBulkAward === true;
+
+      // Global permission check:
+      if (!isSuperAdmin && !isAdmin && !canBulkAward && !allowedActivities.includes(activity_id)) {
+        return res.status(403).json({ success: false, error: 'Tidak punya izin untuk bulk award' });
+      }
+
+      const now           = Date.now();
+      const entryResults  = [];
+      const failures      = [];
+
+      for (const username of target_usernames) {
+        try {
+          const target = await userDAO.findByUsername(String(username).trim());
+          if (!target || target.isActive === false) {
+            failures.push({ username, reason: 'User not found or inactive' });
+            continue;
+          }
+
+          const targetGroups = Array.isArray(target.groups) ? target.groups : [];
+          if (!hasIntersection(targetGroups, activity.groups || [])) {
+            failures.push({ username, reason: 'User not in activity group' });
+            continue;
+          }
+
+          // Admin hanya boleh beri poin ke user di managedGroups-nya
+          if (isAdmin) {
+            const managedGroups = caller.managedGroups || [];
+            if (!hasIntersection(targetGroups, managedGroups)) {
+              failures.push({ username, reason: 'Admin tidak mengelola group user ini' });
+              continue;
+            }
+          }
+
+          // User biasa dengan permission khusus: wajib ada intersection group juga
+          if (!isSuperAdmin && !isAdmin) {
+            const callerGroups = Array.isArray(caller.groups) ? caller.groups : [];
+            if (!hasIntersection(callerGroups, targetGroups)) {
+              failures.push({ username, reason: 'Tidak dalam group yang sama dengan pemberi poin' });
+              continue;
+            }
+            if (!canBulkAward && !allowedActivities.includes(activity_id)) {
+              failures.push({ username, reason: 'Tidak punya izin untuk activity ini' });
+              continue;
+            }
+          }
+
+          const entryRef  = db.collection(ENTRIES).doc();
+          const ledgerRef = db.collection(LEDGER).doc();
+          const statsRef  = db.collection(USER_STATS).doc(target.username);
+
+          const entryTimestamp = timestamp || now;
+
+          await db.runTransaction(async (t) => {
+            const statsSnap = await t.get(statsRef);
+            const current   = statsSnap.exists ? statsSnap.data() : { total_points: 0, entry_count: 0 };
+
+            t.set(entryRef, {
+              id: entryRef.id,
+              user_id: target.username,
+              user_groups: targetGroups,
+              activity_id,
+              activity_name_snapshot: activity.name,
+              data,
+              timestamp: entryTimestamp,
+              submitted_at: now,
+              submitted_by: caller.username,
+              points_awarded: activity.points,
+              status: 'approved',
+            });
+
+            t.set(ledgerRef, {
+              id: ledgerRef.id,
+              user_id: target.username,
+              entry_id: entryRef.id,
+              points_delta: activity.points,
+              reason: 'bulk_award',
+              created_at: now,
+            });
+
+            t.set(statsRef, {
+              user_id: target.username,
+              total_points: (current.total_points || 0) + activity.points,
+              entry_count:  (current.entry_count  || 0) + 1,
+              updated_at: now,
+            });
+          });
+
+          entryResults.push({
+            username: target.username,
+            entry_id: entryRef.id,
+            points_awarded: activity.points,
+          });
+        } catch (innerErr) {
+          console.error('[bulkAward][per-user]', username, innerErr);
+          failures.push({ username, reason: 'Unexpected error' });
+        }
+      }
+
+      return res.status(200).json({
+        success: true,
+        activity_id,
+        awarded_count: entryResults.length,
+        failed_count: failures.length,
+        awarded: entryResults,
+        failures,
+      });
+    } catch (error) {
+      console.error('[bulkAward]', error);
       return res.status(500).json({ success: false, error: error.message });
     }
   }

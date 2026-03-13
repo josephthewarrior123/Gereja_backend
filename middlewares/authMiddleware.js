@@ -30,6 +30,7 @@ async function authMiddleware(req, res, next) {
       role:          user.role,
       groups:        Array.isArray(user.groups)        ? user.groups        : [],
       managedGroups: Array.isArray(user.managedGroups) ? user.managedGroups : [],
+      permissions:   user.permissions || {},
     };
     return next();
   } catch (error) {

@@ -43,6 +43,7 @@ class AdminController {
         role: value.role,
         groups: value.groups || [],
         managedGroups: value.managedGroups || [],
+        permissions: value.permissions || {},
         isActive: value.isActive !== false,
         createdAt: value.createdAt || null,
       }));
@@ -64,7 +65,7 @@ class AdminController {
   // admin biasa hanya bisa assign user ke group yang dia kelola
   async upsertUser(req, res) {
     try {
-      const { username, fullName, email, phone_number, groups = [], role, is_active } = req.body;
+      const { username, fullName, email, phone_number, groups = [], role, is_active, permissions } = req.body;
 
       if (!username) {
         return res.status(400).json({ success: false, error: 'username wajib' });
@@ -109,6 +110,7 @@ class AdminController {
         if (Array.isArray(groups)) patch.groups = cleanGroups;
         if (role) patch.role = role;
         if (typeof is_active === 'boolean') patch.isActive = is_active;
+        if (permissions && typeof permissions === 'object') patch.permissions = permissions;
 
         const updated = await userDAO.updateUser(username, patch);
         return res.status(200).json({
@@ -121,6 +123,7 @@ class AdminController {
             phone_number: updated.phone_number || '',
             role: updated.role,
             groups: updated.groups || [],
+            permissions: updated.permissions || {},
             isActive: updated.isActive !== false,
           },
         });
@@ -146,6 +149,7 @@ class AdminController {
         role: role || 'user',
         groups: cleanGroups,
         managedGroups: [],
+        permissions: permissions && typeof permissions === 'object' ? permissions : {},
         isActive: is_active !== false,
       });
 
@@ -157,6 +161,7 @@ class AdminController {
           fullName: created.fullName,
           role: created.role,
           groups: created.groups || [],
+          permissions: created.permissions || {},
         },
       });
     } catch (error) {

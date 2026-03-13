@@ -68,7 +68,14 @@ class UserController {
         success: true,
         message: 'Signup berhasil',
         token,
-        user: { username: newUser.username, fullName: newUser.fullName, role: newUser.role, groups: newUser.groups },
+        user: {
+          username:      newUser.username,
+          fullName:      newUser.fullName,
+          role:          newUser.role,
+          groups:        newUser.groups,
+          managedGroups: newUser.managedGroups || [],
+          permissions:   newUser.permissions || {},
+        },
       });
     } catch (error) {
       return res.status(400).json({ success: false, error: error.message });
@@ -99,6 +106,7 @@ class UserController {
           role:          user.role,
           groups:        user.groups        || [],
           managedGroups: user.managedGroups || [],
+          permissions:   user.permissions   || {},
         },
       });
     } catch (error) {
@@ -116,10 +124,11 @@ class UserController {
         fullName:      user.fullName,
         email:         user.email         || '',
         phone_number:  user.phone_number  || '',
-        role:          user.role,
-        groups:        user.groups        || [],
-        managedGroups: user.managedGroups || [],
-        createdAt:     user.createdAt,
+          role:          user.role,
+          groups:        user.groups        || [],
+          managedGroups: user.managedGroups || [],
+          permissions:   user.permissions   || {},
+          createdAt:     user.createdAt,
       },
     });
   }
@@ -232,6 +241,7 @@ class UserController {
         role:          value.role,
         groups:        value.groups        || [],
         managedGroups: value.managedGroups || [],
+        permissions:   value.permissions   || {},
         isActive:      value.isActive !== false,
         createdAt:     value.createdAt     || null,
       }));
