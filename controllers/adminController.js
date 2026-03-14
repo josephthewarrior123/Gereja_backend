@@ -83,8 +83,8 @@ class AdminController {
         return res.status(400).json({ success: false, error: 'Role tidak valid' });
       }
 
-      // admin biasa tidak boleh promote ke super_admin atau gembala
-      if (req.user.role !== 'super_admin' && (role === 'super_admin' || role === 'gembala')) {
+      // admin biasa tidak boleh promote ke super_admin
+      if (req.user.role !== 'super_admin' && role === 'super_admin') {
         return res.status(403).json({ success: false, error: 'Hanya super_admin yang bisa set role ini' });
       }
 
