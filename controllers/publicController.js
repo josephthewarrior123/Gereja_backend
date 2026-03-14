@@ -22,7 +22,6 @@ class PublicController {
 
   async listActivities(req, res) {
     try {
-      // Hanya ambil activity yang aktif langsung dari Firestore
       const snap = await db.collection(COLLECTION)
         .where('is_active', '==', true)
         .orderBy('created_at', 'desc')
@@ -32,10 +31,11 @@ class PublicController {
 
       const activities = all.filter((item) => {
         if (req.user.role === 'super_admin') return true;
-        if (req.user.role === 'admin') {
+        // admin & gembala: filter by managedGroups
+        if (req.user.role === 'admin' || req.user.role === 'gembala') {
           return hasIntersection(item.groups || [], req.user.managedGroups || []);
         }
-        // user: hanya activity yang overlap dengan groups user
+        // user biasa: filter by groups
         return hasIntersection(item.groups || [], req.user.groups || []);
       });
 
