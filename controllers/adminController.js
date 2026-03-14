@@ -61,7 +61,22 @@ class AdminController {
           || hasIntersection(userManagedGroups, req.user.managedGroups || []);
       });
 
-      return res.status(200).json({ success: true, count: users.length, data: users });
+      // Join user_stats (total_points & entry_count) untuk setiap user
+      const statsSnap = await db.collection('user_stats').get();
+      const statsMap = {};
+      statsSnap.docs.forEach((doc) => {
+        const d = doc.data();
+        const uid = d.user_id || doc.id;
+        statsMap[uid] = { total_points: d.total_points || 0, entry_count: d.entry_count || 0 };
+      });
+
+      const usersWithStats = users.map((u) => ({
+        ...u,
+        total_points: statsMap[u.username]?.total_points || 0,
+        entry_count: statsMap[u.username]?.entry_count || 0,
+      }));
+
+      return res.status(200).json({ success: true, count: usersWithStats.length, data: usersWithStats });
     } catch (error) {
       console.error('[listUsers]', error);
       return res.status(500).json({ success: false, error: error.message });
