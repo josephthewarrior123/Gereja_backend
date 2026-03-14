@@ -54,8 +54,11 @@ class AdminController {
 
       const users = all.filter((u) => {
         if (req.user.role === 'super_admin') return true;
-        // admin & gembala: hanya user yang ada di managedGroups-nya
-        return hasIntersection(u.groups || [], req.user.managedGroups || []);
+        // admin & gembala: tampilkan user (cek groups) DAN gembala/admin (cek managedGroups)
+        const userGroups = u.groups || [];
+        const userManagedGroups = u.managedGroups || [];
+        return hasIntersection(userGroups, req.user.managedGroups || [])
+          || hasIntersection(userManagedGroups, req.user.managedGroups || []);
       });
 
       return res.status(200).json({ success: true, count: users.length, data: users });

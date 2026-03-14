@@ -24,12 +24,20 @@ async function authMiddleware(req, res, next) {
       return res.status(403).json({ success: false, error: 'User inactive' });
     }
 
+    const groups = Array.isArray(user.groups) ? user.groups : [];
+    let managedGroups = Array.isArray(user.managedGroups) ? user.managedGroups : [];
+
+    // Fallback: admin/gembala yang managedGroups-nya kosong, pakai groups
+    if (["admin", "gembala"].includes(user.role) && managedGroups.length === 0 && groups.length > 0) {
+      managedGroups = groups;
+    }
+
     req.user = {
       id: user.id,
       username: user.username,
       role: user.role,
-      groups: Array.isArray(user.groups) ? user.groups : [],
-      managedGroups: Array.isArray(user.managedGroups) ? user.managedGroups : [],
+      groups,
+      managedGroups,
     };
     return next();
   } catch (error) {

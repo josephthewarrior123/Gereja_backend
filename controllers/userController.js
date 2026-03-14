@@ -230,12 +230,24 @@ class UserController {
       }
 
       const cleanUserGroups = await normalizeGroups(groups);
-      const cleanManagedGroups = await normalizeGroups(managedGroups);
+      let cleanManagedGroups = await normalizeGroups(managedGroups);
+
+      // Kalau promote ke gembala/admin tapi managedGroups kosong,
+      // pakai groups lama user supaya tidak hilang (dari onboarding)
+      if (['gembala', 'admin'].includes(role) && cleanManagedGroups.length === 0) {
+        cleanManagedGroups = await normalizeGroups(existing.groups || []);
+      }
+
+      // Kalau downgrade ke user tapi groups tidak dikirim,
+      // fallback ke managedGroups lama supaya group tidak hilang
+      let finalUserGroups = cleanUserGroups;
+      if (role === 'user' && finalUserGroups.length === 0) {
+        finalUserGroups = await normalizeGroups(existing.managedGroups || []);
+      }
 
       const patch = {
         role,
-        // user punya groups, gembala/admin/super_admin punya managedGroups
-        groups: role === 'user' ? cleanUserGroups : [],
+        groups: role === 'user' ? finalUserGroups : [],
         managedGroups: ['admin', 'gembala', 'super_admin'].includes(role) ? cleanManagedGroups : [],
       };
 
