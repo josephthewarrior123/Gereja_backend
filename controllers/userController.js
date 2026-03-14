@@ -211,9 +211,22 @@ class UserController {
       const existing = await userDAO.findByUsername(username);
       if (!existing) return res.status(404).json({ success: false, error: 'User tidak ditemukan' });
 
-      // Hanya super_admin yang bisa set role super_admin atau gembala
-      if (req.user.role !== 'super_admin' && (role === 'super_admin' || role === 'gembala')) {
+      // Hanya super_admin yang bisa set role super_admin
+      if (req.user.role !== 'super_admin' && role === 'super_admin') {
         return res.status(403).json({ success: false, error: 'Hanya super_admin yang bisa set role ini' });
+      }
+
+      // Admin bisa set role gembala, tapi managedGroups harus subset dari managedGroups-nya sendiri
+      if (req.user.role === 'admin' && role === 'gembala') {
+        const adminManaged = req.user.managedGroups || [];
+        const requestedManaged = Array.isArray(managedGroups) ? managedGroups : [];
+        const normalizedRequested = requestedManaged
+          .map((g) => String(g || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, ''))
+          .filter(Boolean);
+        const isSubset = normalizedRequested.every((g) => adminManaged.includes(g));
+        if (!isSubset) {
+          return res.status(403).json({ success: false, error: 'Admin hanya bisa assign managedGroups dalam scope-nya sendiri' });
+        }
       }
 
       const cleanUserGroups = await normalizeGroups(groups);
