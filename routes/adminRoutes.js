@@ -5,14 +5,46 @@ const { requireRole } = require('../middlewares/roleMiddleware');
 
 const router = express.Router();
 
-// Semua admin routes pakai JWT auth (sama seperti userRoutes)
-router.use('/admin', authMiddleware, requireRole('admin', 'super_admin'));
+// ── Users ─────────────────────────────────────────────────────────────────────
+// gembala boleh lihat list user di managedGroups-nya (untuk bulk award)
+router.get('/admin/users',
+    authMiddleware,
+    requireRole('admin', 'super_admin', 'gembala'),
+    (req, res) => controller.listUsers(req, res)
+);
 
-router.get('/admin/users', (req, res) => controller.listUsers(req, res));
-router.post('/admin/users', (req, res) => controller.upsertUser(req, res));
-router.delete('/admin/users/:username', (req, res) => controller.deleteUser(req, res));
-router.get('/admin/activities', (req, res) => controller.listAdminActivities(req, res));
-router.post('/admin/activities', (req, res) => controller.createActivity(req, res));
-router.patch('/admin/activities/:activityId', (req, res) => controller.updateActivity(req, res));
+// create & delete hanya admin & super_admin
+router.post('/admin/users',
+    authMiddleware,
+    requireRole('admin', 'super_admin'),
+    (req, res) => controller.upsertUser(req, res)
+);
+
+router.delete('/admin/users/:username',
+    authMiddleware,
+    requireRole('admin', 'super_admin'),
+    (req, res) => controller.deleteUser(req, res)
+);
+
+// ── Activities ────────────────────────────────────────────────────────────────
+// gembala boleh lihat list activity di managedGroups-nya
+router.get('/admin/activities',
+    authMiddleware,
+    requireRole('admin', 'super_admin', 'gembala'),
+    (req, res) => controller.listAdminActivities(req, res)
+);
+
+// create & update hanya admin & super_admin
+router.post('/admin/activities',
+    authMiddleware,
+    requireRole('admin', 'super_admin'),
+    (req, res) => controller.createActivity(req, res)
+);
+
+router.patch('/admin/activities/:activityId',
+    authMiddleware,
+    requireRole('admin', 'super_admin'),
+    (req, res) => controller.updateActivity(req, res)
+);
 
 module.exports = router;
