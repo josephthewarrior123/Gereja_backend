@@ -1,5 +1,4 @@
 // authorization.js — middleware helpers
-// VALID_GROUPS dihapus karena group sekarang dinamis dari DB (Firestore)
 
 function hasIntersection(a = [], b = []) {
   const set = new Set(a);
@@ -15,23 +14,23 @@ function requireRole(...roles) {
   };
 }
 
-function requireAdminManagedGroups(req, res, next) {
+// Dipakai untuk route yang butuh managedGroups (admin, gembala, super_admin)
+function requireManagedGroups(req, res, next) {
   if (req.user.role === 'super_admin') return next();
 
-  if (req.user.role !== 'admin') {
+  const allowed = ['admin', 'gembala'];
+  if (!allowed.includes(req.user.role)) {
     return res.status(403).json({ success: false, error: 'Forbidden' });
   }
 
-  const managed = req.user.managedGroups || req.user.managed_groups || [];
+  const managed = req.user.managedGroups || [];
   if (!managed.length) {
-    return res.status(403).json({ success: false, error: 'Admin has no assigned groups' });
+    return res.status(403).json({ success: false, error: 'Kamu belum punya group yang dikelola' });
   }
 
   return next();
 }
 
-// Normalisasi group — tidak lagi filter by hardcoded list
-// Validasi apakah group valid dilakukan di controller via groupDAO.getActiveGroupKeys()
 function normalizeGroups(groups) {
   if (!Array.isArray(groups)) return [];
   return groups
@@ -42,6 +41,7 @@ function normalizeGroups(groups) {
 module.exports = {
   hasIntersection,
   requireRole,
-  requireAdminManagedGroups,
+  requireAdminManagedGroups: requireManagedGroups, // backward-compat alias
+  requireManagedGroups,
   normalizeGroups,
 };

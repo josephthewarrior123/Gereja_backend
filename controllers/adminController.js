@@ -5,6 +5,9 @@ const groupDAO = require('../dao/groupDAO');
 
 const COLLECTION = 'activities';
 
+// Role yang punya managedGroups (selain super_admin)
+const MANAGED_ROLES = new Set(['admin', 'gembala']);
+
 function toKey(name) {
   return String(name || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
 }
@@ -29,9 +32,11 @@ class AdminController {
     return db.collection(COLLECTION);
   }
 
-  // GET /admin/users — list semua user
-  // super_admin: lihat semua
-  // admin: hanya lihat user yang punya intersection dengan managedGroups-nya
+  // ─────────────────────────────────────────────────────────────────────────────
+  // GET /admin/users
+  // super_admin   : lihat semua
+  // admin/gembala : hanya user yang ada di managedGroups-nya
+  // ─────────────────────────────────────────────────────────────────────────────
   async listUsers(req, res) {
     try {
       const raw = await userDAO.getAllUsers();
@@ -43,14 +48,13 @@ class AdminController {
         role: value.role,
         groups: value.groups || [],
         managedGroups: value.managedGroups || [],
-        permissions: value.permissions || {},
         isActive: value.isActive !== false,
         createdAt: value.createdAt || null,
       }));
 
       const users = all.filter((u) => {
         if (req.user.role === 'super_admin') return true;
-        // admin: hanya lihat user yang ada di salah satu managedGroups-nya
+        // admin & gembala: hanya user yang ada di managedGroups-nya
         return hasIntersection(u.groups || [], req.user.managedGroups || []);
       });
 
@@ -61,32 +65,34 @@ class AdminController {
     }
   }
 
+  // ─────────────────────────────────────────────────────────────────────────────
   // POST /admin/users — upsert user (create atau update by username)
-  // admin biasa hanya bisa assign user ke group yang dia kelola
+  // Catatan: gembala TIDAK bisa create/update user — hanya admin & super_admin.
+  // Endpoint ini tetap diproteksi di route level dengan requireRole('admin','super_admin').
+  // ─────────────────────────────────────────────────────────────────────────────
   async upsertUser(req, res) {
     try {
-      const { username, fullName, email, phone_number, groups = [], role, is_active, permissions } = req.body;
+      const { username, fullName, email, phone_number, groups = [], role, is_active } = req.body;
 
       if (!username) {
         return res.status(400).json({ success: false, error: 'username wajib' });
       }
 
-      // Validasi role jika dikirim
-      const VALID_ROLES = ['super_admin', 'admin', 'user'];
+      const VALID_ROLES = ['super_admin', 'admin', 'gembala', 'user'];
       if (role && !VALID_ROLES.includes(role)) {
         return res.status(400).json({ success: false, error: 'Role tidak valid' });
       }
 
-      // admin biasa tidak boleh assign/promote ke super_admin
-      if (req.user.role !== 'super_admin' && role === 'super_admin') {
-        return res.status(403).json({ success: false, error: 'Hanya super_admin yang bisa set role super_admin' });
+      // admin biasa tidak boleh promote ke super_admin atau gembala
+      if (req.user.role !== 'super_admin' && (role === 'super_admin' || role === 'gembala')) {
+        return res.status(403).json({ success: false, error: 'Hanya super_admin yang bisa set role ini' });
       }
 
       const cleanGroups = normalizeGroups(groups);
+      const managedGroups = req.user.managedGroups || [];
 
       // admin biasa hanya bisa assign user ke managedGroups-nya
       if (req.user.role !== 'super_admin' && cleanGroups.length > 0) {
-        const managedGroups = req.user.managedGroups || [];
         if (!isSubset(cleanGroups, managedGroups)) {
           return res.status(403).json({ success: false, error: 'Hanya bisa assign user ke group yang Anda kelola' });
         }
@@ -97,7 +103,6 @@ class AdminController {
       if (existing) {
         // UPDATE — admin biasa hanya boleh edit user yang ada di managedGroups-nya
         if (req.user.role !== 'super_admin') {
-          const managedGroups = req.user.managedGroups || [];
           if (!hasIntersection(existing.groups || [], managedGroups)) {
             return res.status(403).json({ success: false, error: 'Tidak ada akses untuk user ini' });
           }
@@ -110,7 +115,6 @@ class AdminController {
         if (Array.isArray(groups)) patch.groups = cleanGroups;
         if (role) patch.role = role;
         if (typeof is_active === 'boolean') patch.isActive = is_active;
-        if (permissions && typeof permissions === 'object') patch.permissions = permissions;
 
         const updated = await userDAO.updateUser(username, patch);
         return res.status(200).json({
@@ -123,7 +127,6 @@ class AdminController {
             phone_number: updated.phone_number || '',
             role: updated.role,
             groups: updated.groups || [],
-            permissions: updated.permissions || {},
             isActive: updated.isActive !== false,
           },
         });
@@ -133,7 +136,6 @@ class AdminController {
       if (req.user.role !== 'super_admin') {
         return res.status(403).json({ success: false, error: 'Hanya super_admin yang bisa membuat user baru' });
       }
-
       if (!req.body.password) {
         return res.status(400).json({ success: false, error: 'password wajib untuk user baru' });
       }
@@ -149,20 +151,13 @@ class AdminController {
         role: role || 'user',
         groups: cleanGroups,
         managedGroups: [],
-        permissions: permissions && typeof permissions === 'object' ? permissions : {},
         isActive: is_active !== false,
       });
 
       return res.status(201).json({
         success: true,
         message: 'User berhasil dibuat',
-        data: {
-          username: created.username,
-          fullName: created.fullName,
-          role: created.role,
-          groups: created.groups || [],
-          permissions: created.permissions || {},
-        },
+        data: { username: created.username, fullName: created.fullName, role: created.role, groups: created.groups || [] },
       });
     } catch (error) {
       console.error('[upsertUser]', error);
@@ -170,6 +165,11 @@ class AdminController {
     }
   }
 
+  // ─────────────────────────────────────────────────────────────────────────────
+  // GET /admin/activities
+  // super_admin   : semua activity
+  // admin/gembala : hanya activity yang group-nya intersection dengan managedGroups
+  // ─────────────────────────────────────────────────────────────────────────────
   async listAdminActivities(req, res) {
     try {
       const snap = await this._col().orderBy('created_at', 'desc').get();
@@ -177,21 +177,20 @@ class AdminController {
 
       const activities = all.filter((item) => {
         if (req.user.role === 'super_admin') return true;
-        // admin: hanya return activity yang punya intersection dengan managedGroups nya admin
         return hasIntersection(item.groups || [], req.user.managedGroups || []);
       });
 
-      return res.status(200).json({
-        success: true,
-        count: activities.length,
-        data: activities,
-      });
+      return res.status(200).json({ success: true, count: activities.length, data: activities });
     } catch (error) {
       console.error('[listAdminActivities]', error);
       return res.status(500).json({ success: false, error: error.message });
     }
   }
 
+  // ─────────────────────────────────────────────────────────────────────────────
+  // POST /admin/activities — create activity
+  // gembala TIDAK bisa create activity — diproteksi di route level.
+  // ─────────────────────────────────────────────────────────────────────────────
   async createActivity(req, res) {
     try {
       const { name, points, fields = [], groups = [], is_active = true } = req.body;
@@ -234,17 +233,17 @@ class AdminController {
         updated_at: now,
       });
 
-      return res.status(201).json({
-        success: true,
-        message: 'Activity created',
-        data: { id: newRef.id },
-      });
+      return res.status(201).json({ success: true, message: 'Activity created', data: { id: newRef.id } });
     } catch (error) {
       console.error('[createActivity]', error);
       return res.status(500).json({ success: false, error: error.message });
     }
   }
 
+  // ─────────────────────────────────────────────────────────────────────────────
+  // PATCH /admin/activities/:activityId
+  // gembala TIDAK bisa update activity — diproteksi di route level.
+  // ─────────────────────────────────────────────────────────────────────────────
   async updateActivity(req, res) {
     try {
       const { activityId } = req.params;
@@ -291,9 +290,13 @@ class AdminController {
       return res.status(500).json({ success: false, error: error.message });
     }
   }
-  // DELETE /admin/users/:username — hapus user
-  // super_admin: bisa hapus siapa aja kecuali super_admin lain
-  // admin: hanya bisa hapus user yang ada di managedGroups-nya
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // DELETE /admin/users/:username
+  // super_admin   : bisa hapus siapa aja kecuali super_admin lain
+  // admin         : hanya user di managedGroups-nya, tidak bisa hapus admin lain
+  // gembala       : TIDAK bisa hapus user — diproteksi di route level
+  // ─────────────────────────────────────────────────────────────────────────────
   async deleteUser(req, res) {
     try {
       const { username } = req.params;
@@ -311,15 +314,13 @@ class AdminController {
         return res.status(403).json({ success: false, error: 'Tidak bisa menghapus super_admin' });
       }
 
-      // admin biasa hanya bisa hapus user yang ada di salah satu managedGroups-nya
       if (req.user.role !== 'super_admin') {
         const managedGroups = req.user.managedGroups || [];
         if (!hasIntersection(existing.groups || [], managedGroups)) {
           return res.status(403).json({ success: false, error: 'Tidak ada akses untuk menghapus user ini' });
         }
-        // admin tidak bisa hapus admin lain
-        if (existing.role === 'admin') {
-          return res.status(403).json({ success: false, error: 'Admin tidak bisa menghapus admin lain' });
+        if (existing.role === 'admin' || existing.role === 'gembala') {
+          return res.status(403).json({ success: false, error: 'Admin tidak bisa menghapus admin atau gembala lain' });
         }
       }
 

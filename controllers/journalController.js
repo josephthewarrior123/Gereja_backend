@@ -3,10 +3,12 @@ const { validateEntryDataByConfig } = require('../utils/validators');
 const groupDAO = require('../dao/groupDAO');
 const userDAO = require('../dao/userDAO');
 
-const ACTIVITIES   = 'activities';
-const ENTRIES      = 'journal_entries';
-const LEDGER       = 'points_ledger';
-const USER_STATS   = 'user_stats';
+const ACTIVITIES = 'activities';
+const ENTRIES = 'journal_entries';
+const LEDGER = 'points_ledger';
+const USER_STATS = 'user_stats';
+
+const MAX_BULK = 100;
 
 function hasIntersection(a, b) {
   const setB = new Set(b);
@@ -22,7 +24,7 @@ function parseLimit(raw, defaultVal = 100, maxVal = 500) {
 class JournalController {
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // POST /journal/entries
+  // POST /journal/entries  —  user submit entry untuk diri sendiri
   // ─────────────────────────────────────────────────────────────────────────────
   async submitEntry(req, res) {
     try {
@@ -31,7 +33,6 @@ class JournalController {
         return res.status(400).json({ success: false, error: 'activity_id is required' });
       }
 
-      // Load activity dari Firestore
       const actDoc = await db.collection(ACTIVITIES).doc(activity_id).get();
       if (!actDoc.exists) {
         return res.status(404).json({ success: false, error: 'Activity not found' });
@@ -41,7 +42,7 @@ class JournalController {
         return res.status(400).json({ success: false, error: 'Activity is inactive' });
       }
 
-      const userId     = req.user.username;
+      const userId = req.user.username;
       const userGroups = req.user.groups || [];
 
       if (!hasIntersection(userGroups, activity.groups || [])) {
@@ -53,13 +54,12 @@ class JournalController {
         return res.status(400).json({ success: false, error: fieldsError });
       }
 
-      const now            = Date.now();
+      const now = Date.now();
       const entryTimestamp = timestamp || now;
 
-      // Pakai Firestore batch supaya entry + ledger + stats atomic
-      const entryRef  = db.collection(ENTRIES).doc();
+      const entryRef = db.collection(ENTRIES).doc();
       const ledgerRef = db.collection(LEDGER).doc();
-      const statsRef  = db.collection(USER_STATS).doc(userId);
+      const statsRef = db.collection(USER_STATS).doc(userId);
 
       const entryData = {
         id: entryRef.id,
@@ -73,12 +73,13 @@ class JournalController {
         submitted_by: userId,
         points_awarded: activity.points,
         status: 'approved',
+        awarded_by: null,
+        bulk_award: false,
       };
 
-      // Gunakan transaction untuk stats (biar increment aman)
       await db.runTransaction(async (t) => {
         const statsSnap = await t.get(statsRef);
-        const current   = statsSnap.exists ? statsSnap.data() : { total_points: 0, entry_count: 0 };
+        const current = statsSnap.exists ? statsSnap.data() : { total_points: 0, entry_count: 0 };
 
         t.set(entryRef, entryData);
         t.set(ledgerRef, {
@@ -92,7 +93,7 @@ class JournalController {
         t.set(statsRef, {
           user_id: userId,
           total_points: (current.total_points || 0) + activity.points,
-          entry_count:  (current.entry_count  || 0) + 1,
+          entry_count: (current.entry_count || 0) + 1,
           updated_at: now,
         });
       });
@@ -109,26 +110,42 @@ class JournalController {
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // POST /journal/admin/bulk-award
+  // POST /journal/bulk-award
   //
-  // Beri poin untuk sebuah activity ke banyak user sekaligus.
-  // Akses:
-  //   - super_admin: bisa untuk semua user (yang ada di group activity)
-  //   - admin: hanya untuk user yang ada di salah satu managedGroups-nya
-  //   - user biasa: hanya jika punya permissions.canBulkAward / allowedActivities
+  // Dipakai oleh: gembala, admin, super_admin
+  //
+  // Body:
+  //   activity_id  — string, required
+  //   usernames    — string[], required, max 100 user
+  //   data         — object, optional (field tambahan activity)
+  //   timestamp    — number, optional (override timestamp entry)
+  //   note         — string, optional (catatan dari awarder)
+  //
+  // Scope:
+  //   gembala / admin  → activity harus ada di salah satu managedGroups-nya
+  //                      target user harus ada di salah satu managedGroups-nya
+  //   super_admin      → bebas, activity & user apa aja
+  //
+  // Response:
+  //   awarded  — berhasil dapat award
+  //   skipped  — diskip beserta alasannya
   // ─────────────────────────────────────────────────────────────────────────────
   async bulkAward(req, res) {
     try {
-      const { activity_id, target_usernames = [], data = {}, timestamp } = req.body;
+      const { activity_id, usernames, data = {}, timestamp, note = '' } = req.body;
 
+      // ── Validasi input ────────────────────────────────────────────────────────
       if (!activity_id) {
         return res.status(400).json({ success: false, error: 'activity_id is required' });
       }
-      if (!Array.isArray(target_usernames) || target_usernames.length === 0) {
-        return res.status(400).json({ success: false, error: 'target_usernames must be a non-empty array' });
+      if (!Array.isArray(usernames) || usernames.length === 0) {
+        return res.status(400).json({ success: false, error: 'usernames harus array minimal 1 item' });
+      }
+      if (usernames.length > MAX_BULK) {
+        return res.status(400).json({ success: false, error: `Maksimal ${MAX_BULK} user per bulk award` });
       }
 
-      // Load activity
+      // ── Load activity ─────────────────────────────────────────────────────────
       const actDoc = await db.collection(ACTIVITIES).doc(activity_id).get();
       if (!actDoc.exists) {
         return res.status(404).json({ success: false, error: 'Activity not found' });
@@ -138,118 +155,134 @@ class JournalController {
         return res.status(400).json({ success: false, error: 'Activity is inactive' });
       }
 
-      const caller       = req.user;
-      const permissions  = caller.permissions || {};
-      const isSuperAdmin = caller.role === 'super_admin';
-      const isAdmin      = caller.role === 'admin';
-
-      const allowedActivities = Array.isArray(permissions.allowedActivities) ? permissions.allowedActivities : [];
-      const canBulkAward      = permissions.canBulkAward === true;
-
-      // Global permission check:
-      if (!isSuperAdmin && !isAdmin && !canBulkAward && !allowedActivities.includes(activity_id)) {
-        return res.status(403).json({ success: false, error: 'Tidak punya izin untuk bulk award' });
+      // ── Validasi fields ───────────────────────────────────────────────────────
+      const fieldsError = validateEntryDataByConfig(activity.fields || [], data);
+      if (fieldsError) {
+        return res.status(400).json({ success: false, error: fieldsError });
       }
 
-      const now           = Date.now();
-      const entryResults  = [];
-      const failures      = [];
+      // ── Scope check awarder ───────────────────────────────────────────────────
+      const awarderRole = req.user.role;
+      const awarderUsername = req.user.username;
+      const managedGroups = req.user.managedGroups || [];
+      const isSuperAdmin = awarderRole === 'super_admin';
 
-      for (const username of target_usernames) {
+      // Gembala & admin: activity harus ada di salah satu managedGroups-nya
+      if (!isSuperAdmin) {
+        if (!hasIntersection(activity.groups || [], managedGroups)) {
+          return res.status(403).json({
+            success: false,
+            error: 'Activity ini tidak ada di group yang kamu kelola',
+          });
+        }
+      }
+
+      // ── Proses per user ───────────────────────────────────────────────────────
+      const cleanUsernames = [...new Set(
+        usernames.map((u) => String(u || '').trim()).filter(Boolean)
+      )];
+
+      const awarded = [];
+      const skipped = [];
+      const now = Date.now();
+      const entryTs = typeof timestamp === 'number' ? timestamp : now;
+      const noteStr = String(note || '').trim();
+
+      for (const targetUsername of cleanUsernames) {
+        // Load user target
+        const targetUser = await userDAO.findByUsername(targetUsername);
+
+        if (!targetUser) {
+          skipped.push({ username: targetUsername, reason: 'User tidak ditemukan' });
+          continue;
+        }
+
+        if (targetUser.isActive === false) {
+          skipped.push({ username: targetUsername, reason: 'User tidak aktif' });
+          continue;
+        }
+
+        const targetGroups = targetUser.groups || [];
+
+        // Gembala & admin: target user harus ada di salah satu managedGroups-nya
+        if (!isSuperAdmin) {
+          if (!hasIntersection(targetGroups, managedGroups)) {
+            skipped.push({ username: targetUsername, reason: 'User tidak ada di group yang kamu kelola' });
+            continue;
+          }
+        }
+
+        // user_groups untuk entry = irisan targetGroups & activity.groups
+        // supaya entry tercatat di group yang relevan saja
+        const entryUserGroups = targetGroups.filter((g) =>
+          (activity.groups || []).includes(g)
+        );
+
+        const entryRef = db.collection(ENTRIES).doc();
+        const ledgerRef = db.collection(LEDGER).doc();
+        const statsRef = db.collection(USER_STATS).doc(targetUsername);
+
+        const entryData = {
+          id: entryRef.id,
+          user_id: targetUsername,
+          user_groups: entryUserGroups,
+          activity_id,
+          activity_name_snapshot: activity.name,
+          data,
+          timestamp: entryTs,
+          submitted_at: now,
+          submitted_by: awarderUsername,
+          points_awarded: activity.points,
+          status: 'approved',
+          awarded_by: awarderUsername,
+          bulk_award: true,
+          note: noteStr,
+        };
+
         try {
-          const target = await userDAO.findByUsername(String(username).trim());
-          if (!target || target.isActive === false) {
-            failures.push({ username, reason: 'User not found or inactive' });
-            continue;
-          }
-
-          const targetGroups = Array.isArray(target.groups) ? target.groups : [];
-          if (!hasIntersection(targetGroups, activity.groups || [])) {
-            failures.push({ username, reason: 'User not in activity group' });
-            continue;
-          }
-
-          // Admin hanya boleh beri poin ke user di managedGroups-nya
-          if (isAdmin) {
-            const managedGroups = caller.managedGroups || [];
-            if (!hasIntersection(targetGroups, managedGroups)) {
-              failures.push({ username, reason: 'Admin tidak mengelola group user ini' });
-              continue;
-            }
-          }
-
-          // User biasa dengan permission khusus: wajib ada intersection group juga
-          if (!isSuperAdmin && !isAdmin) {
-            const callerGroups = Array.isArray(caller.groups) ? caller.groups : [];
-            if (!hasIntersection(callerGroups, targetGroups)) {
-              failures.push({ username, reason: 'Tidak dalam group yang sama dengan pemberi poin' });
-              continue;
-            }
-            if (!canBulkAward && !allowedActivities.includes(activity_id)) {
-              failures.push({ username, reason: 'Tidak punya izin untuk activity ini' });
-              continue;
-            }
-          }
-
-          const entryRef  = db.collection(ENTRIES).doc();
-          const ledgerRef = db.collection(LEDGER).doc();
-          const statsRef  = db.collection(USER_STATS).doc(target.username);
-
-          const entryTimestamp = timestamp || now;
-
           await db.runTransaction(async (t) => {
             const statsSnap = await t.get(statsRef);
-            const current   = statsSnap.exists ? statsSnap.data() : { total_points: 0, entry_count: 0 };
+            const current = statsSnap.exists
+              ? statsSnap.data()
+              : { total_points: 0, entry_count: 0 };
 
-            t.set(entryRef, {
-              id: entryRef.id,
-              user_id: target.username,
-              user_groups: targetGroups,
-              activity_id,
-              activity_name_snapshot: activity.name,
-              data,
-              timestamp: entryTimestamp,
-              submitted_at: now,
-              submitted_by: caller.username,
-              points_awarded: activity.points,
-              status: 'approved',
-            });
-
+            t.set(entryRef, entryData);
             t.set(ledgerRef, {
               id: ledgerRef.id,
-              user_id: target.username,
+              user_id: targetUsername,
               entry_id: entryRef.id,
               points_delta: activity.points,
               reason: 'bulk_award',
+              awarded_by: awarderUsername,
               created_at: now,
             });
-
             t.set(statsRef, {
-              user_id: target.username,
+              user_id: targetUsername,
               total_points: (current.total_points || 0) + activity.points,
-              entry_count:  (current.entry_count  || 0) + 1,
+              entry_count: (current.entry_count || 0) + 1,
               updated_at: now,
             });
           });
 
-          entryResults.push({
-            username: target.username,
+          awarded.push({
+            username: targetUsername,
+            fullName: targetUser.fullName || '',
             entry_id: entryRef.id,
             points_awarded: activity.points,
           });
-        } catch (innerErr) {
-          console.error('[bulkAward][per-user]', username, innerErr);
-          failures.push({ username, reason: 'Unexpected error' });
+        } catch (txError) {
+          console.error(`[bulkAward] tx error for ${targetUsername}:`, txError);
+          skipped.push({ username: targetUsername, reason: 'Internal error saat menyimpan' });
         }
       }
 
       return res.status(200).json({
         success: true,
-        activity_id,
-        awarded_count: entryResults.length,
-        failed_count: failures.length,
-        awarded: entryResults,
-        failures,
+        message: `Bulk award selesai. Berhasil: ${awarded.length}, Dilewati: ${skipped.length}`,
+        activity: { id: activity_id, name: activity.name, points: activity.points },
+        awarded_by: awarderUsername,
+        awarded,
+        skipped,
       });
     } catch (error) {
       console.error('[bulkAward]', error);
@@ -259,33 +292,22 @@ class JournalController {
 
   // ─────────────────────────────────────────────────────────────────────────────
   // GET /journal/my-entries
-  //
-  // Query params (semua opsional):
-  //   group        — filter by group (harus group milik user)
-  //   activity_id  — filter by activity
-  //   date_from    — timestamp ms atau ISO string (inklusif)
-  //   date_to      — timestamp ms atau ISO string (inklusif)
-  //   limit        — default 100, max 500
-  //   cursor       — submitted_at timestamp untuk pagination (lanjut dari sini ke belakang)
   // ─────────────────────────────────────────────────────────────────────────────
   async getMyEntries(req, res) {
     try {
-      const userId     = req.user.username;
+      const userId = req.user.username;
       const userGroups = req.user.groups || [];
       const { group, activity_id, date_from, date_to, limit: limitRaw, cursor } = req.query;
       const limit = parseLimit(limitRaw, 100, 500);
 
-      // Validasi filter group — user hanya bisa lihat group miliknya
       if (group && !userGroups.includes(group)) {
         return res.status(403).json({ success: false, error: 'Kamu tidak terdaftar di group tersebut' });
       }
 
-      // Base query: Firestore bisa filter user_id + orderBy + limit langsung
       let q = db.collection(ENTRIES)
         .where('user_id', '==', userId)
         .orderBy('submitted_at', 'desc');
 
-      // Filter date range
       if (date_from) {
         const from = Number(date_from) || new Date(date_from).getTime();
         if (!isNaN(from)) q = q.where('submitted_at', '>=', from);
@@ -294,24 +316,16 @@ class JournalController {
         const to = Number(date_to) || new Date(date_to).getTime();
         if (!isNaN(to)) q = q.where('submitted_at', '<=', to);
       }
-
-      // Filter activity_id
-      if (activity_id) {
-        q = q.where('activity_id', '==', activity_id);
-      }
-
-      // Cursor pagination
+      if (activity_id) q = q.where('activity_id', '==', activity_id);
       if (cursor) {
         const cursorTs = Number(cursor);
         if (!isNaN(cursorTs)) q = q.startAfter(cursorTs);
       }
-
       q = q.limit(limit);
 
-      const snap   = await q.get();
-      let entries  = snap.docs.map((d) => d.data());
+      const snap = await q.get();
+      let entries = snap.docs.map((d) => d.data());
 
-      // Filter group di app layer (Firestore tidak support array-contains + equality bersamaan)
       if (group) {
         entries = entries.filter(
           (e) => Array.isArray(e.user_groups) && e.user_groups.includes(group)
@@ -326,12 +340,7 @@ class JournalController {
         success: true,
         count: entries.length,
         next_cursor: nextCursor,
-        filters: {
-          group: group || null,
-          activity_id: activity_id || null,
-          date_from: date_from || null,
-          date_to: date_to || null,
-        },
+        filters: { group: group || null, activity_id: activity_id || null, date_from: date_from || null, date_to: date_to || null },
         data: entries,
       });
     } catch (error) {
@@ -341,14 +350,7 @@ class JournalController {
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // GET /journal/groups/:group/entries   (admin / super_admin)
-  //
-  // Query params:
-  //   user_id      — filter by username
-  //   activity_id  — filter by activity
-  //   date_from / date_to
-  //   limit        — default 200, max 1000
-  //   cursor       — pagination cursor (submitted_at)
+  // GET /journal/groups/:group/entries   (admin / super_admin / gembala)
   // ─────────────────────────────────────────────────────────────────────────────
   async getGroupEntries(req, res) {
     try {
@@ -369,7 +371,6 @@ class JournalController {
         return res.status(403).json({ success: false, error: 'No access for this group' });
       }
 
-      // Query Firestore: filter by user_groups array-contains
       let q = db.collection(ENTRIES)
         .where('user_groups', 'array-contains', group)
         .orderBy('submitted_at', 'desc');
@@ -382,23 +383,15 @@ class JournalController {
         const to = Number(date_to) || new Date(date_to).getTime();
         if (!isNaN(to)) q = q.where('submitted_at', '<=', to);
       }
-
-      if (user_id) {
-        q = q.where('user_id', '==', user_id);
-      }
-
-      if (activity_id) {
-        q = q.where('activity_id', '==', activity_id);
-      }
-
+      if (user_id) q = q.where('user_id', '==', user_id);
+      if (activity_id) q = q.where('activity_id', '==', activity_id);
       if (cursor) {
         const cursorTs = Number(cursor);
         if (!isNaN(cursorTs)) q = q.startAfter(cursorTs);
       }
-
       q = q.limit(limit);
 
-      const snap    = await q.get();
+      const snap = await q.get();
       const entries = snap.docs.map((d) => d.data());
 
       const nextCursor = entries.length === limit
@@ -410,12 +403,7 @@ class JournalController {
         count: entries.length,
         next_cursor: nextCursor,
         group,
-        filters: {
-          user_id: user_id || null,
-          activity_id: activity_id || null,
-          date_from: date_from || null,
-          date_to: date_to || null,
-        },
+        filters: { user_id: user_id || null, activity_id: activity_id || null, date_from: date_from || null, date_to: date_to || null },
         data: entries,
       });
     } catch (error) {
@@ -425,27 +413,15 @@ class JournalController {
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // GET /journal/history   (admin / super_admin)
-  //
-  // History semua entry. Admin scope ke group yang dia manage.
-  // Super_admin bisa lihat semua.
-  //
-  // Query params:
-  //   group        — filter by group tertentu
-  //   user_id      — filter by username
-  //   activity_id  — filter by activity
-  //   date_from / date_to
-  //   limit        — default 200, max 1000
-  //   cursor       — pagination cursor (submitted_at)
+  // GET /journal/history   (admin / super_admin / gembala)
   // ─────────────────────────────────────────────────────────────────────────────
   async getHistory(req, res) {
     try {
       const { group, user_id, activity_id, date_from, date_to, limit: limitRaw, cursor } = req.query;
-      const limit         = parseLimit(limitRaw, 200, 1000);
-      const isSuperAdmin  = req.user.role === 'super_admin';
+      const limit = parseLimit(limitRaw, 200, 1000);
+      const isSuperAdmin = req.user.role === 'super_admin';
       const managedGroups = req.user.managedGroups || [];
 
-      // Validasi akses group
       if (group) {
         const activeGroupKeys = await groupDAO.getActiveGroupKeys();
         if (!activeGroupKeys.includes(group)) {
@@ -458,23 +434,18 @@ class JournalController {
 
       let q = db.collection(ENTRIES).orderBy('submitted_at', 'desc');
 
-      // Scope ke satu group spesifik (pakai array-contains — paling efisien)
       if (group) {
         q = db.collection(ENTRIES)
           .where('user_groups', 'array-contains', group)
           .orderBy('submitted_at', 'desc');
       } else if (!isSuperAdmin && managedGroups.length === 1) {
-        // Admin dengan 1 group — bisa pakai array-contains
         q = db.collection(ENTRIES)
           .where('user_groups', 'array-contains', managedGroups[0])
           .orderBy('submitted_at', 'desc');
       }
-      // Admin dengan banyak group tanpa filter spesifik → filter di app layer setelah fetch
 
-      // Filter tambahan
-      if (user_id)      q = q.where('user_id',      '==', user_id);
-      if (activity_id)  q = q.where('activity_id',  '==', activity_id);
-
+      if (user_id) q = q.where('user_id', '==', user_id);
+      if (activity_id) q = q.where('activity_id', '==', activity_id);
       if (date_from) {
         const from = Number(date_from) || new Date(date_from).getTime();
         if (!isNaN(from)) q = q.where('submitted_at', '>=', from);
@@ -483,18 +454,16 @@ class JournalController {
         const to = Number(date_to) || new Date(date_to).getTime();
         if (!isNaN(to)) q = q.where('submitted_at', '<=', to);
       }
-
       if (cursor) {
         const cursorTs = Number(cursor);
         if (!isNaN(cursorTs)) q = q.startAfter(cursorTs);
       }
-
       q = q.limit(limit);
 
-      const snap   = await q.get();
-      let entries  = snap.docs.map((d) => d.data());
+      const snap = await q.get();
+      let entries = snap.docs.map((d) => d.data());
 
-      // Admin multi-group tanpa filter group spesifik → filter di app layer
+      // Admin / gembala multi-group tanpa filter spesifik → filter di app layer
       if (!isSuperAdmin && !group && managedGroups.length > 1) {
         entries = entries.filter(
           (e) => Array.isArray(e.user_groups) && hasIntersection(e.user_groups, managedGroups)
@@ -502,9 +471,9 @@ class JournalController {
       }
 
       // Summary
-      const summaryByUser     = {};
+      const summaryByUser = {};
       const summaryByActivity = {};
-      let   totalPoints       = 0;
+      let totalPoints = 0;
       for (const e of entries) {
         summaryByUser[e.user_id] = (summaryByUser[e.user_id] || 0) + (e.points_awarded || 0);
         summaryByActivity[e.activity_name_snapshot] = (summaryByActivity[e.activity_name_snapshot] || 0) + 1;
@@ -519,13 +488,7 @@ class JournalController {
         success: true,
         count: entries.length,
         next_cursor: nextCursor,
-        filters: {
-          group: group || null,
-          user_id: user_id || null,
-          activity_id: activity_id || null,
-          date_from: date_from || null,
-          date_to: date_to || null,
-        },
+        filters: { group: group || null, user_id: user_id || null, activity_id: activity_id || null, date_from: date_from || null, date_to: date_to || null },
         summary: {
           total_points_awarded: totalPoints,
           by_user: summaryByUser,

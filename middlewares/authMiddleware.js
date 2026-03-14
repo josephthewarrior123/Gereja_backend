@@ -11,7 +11,7 @@ async function authMiddleware(req, res, next) {
       return res.status(401).json({ success: false, error: 'No token provided' });
     }
 
-    const token   = authHeader.substring(7);
+    const token = authHeader.substring(7);
     const decoded = jwt.verify(token, JWT_SECRET);
 
     // Selalu ambil dari Firestore supaya perubahan role/group langsung efektif
@@ -25,12 +25,11 @@ async function authMiddleware(req, res, next) {
     }
 
     req.user = {
-      id:            user.id,
-      username:      user.username,
-      role:          user.role,
-      groups:        Array.isArray(user.groups)        ? user.groups        : [],
+      id: user.id,
+      username: user.username,
+      role: user.role,
+      groups: Array.isArray(user.groups) ? user.groups : [],
       managedGroups: Array.isArray(user.managedGroups) ? user.managedGroups : [],
-      permissions:   user.permissions || {},
     };
     return next();
   } catch (error) {
