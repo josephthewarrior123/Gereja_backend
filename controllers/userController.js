@@ -7,6 +7,7 @@ const groupDAO = require('../dao/groupDAO');
 const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret';
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
 const USER_STATS = 'user_stats';
+const USERS = 'users';
 
 // Semua role valid di sistem
 const VALID_ROLES = ['super_admin', 'admin', 'gembala', 'user'];
@@ -140,12 +141,38 @@ class UserController {
       const uid = req.user.username;
       const snap = await db.collection(USER_STATS).doc(uid).get();
       const data = snap.exists ? snap.data() : {};
+      const myPoints = data.total_points || 0;
+
+      // rank = 1 + jumlah user dengan total_points lebih besar (dense rank)
+      let rank = 1;
+      try {
+        const q = db.collection(USER_STATS).where('total_points', '>', myPoints);
+        // Prefer aggregation count if available
+        // eslint-disable-next-line no-underscore-dangle
+        if (typeof q.count === 'function') {
+          const agg = await q.count().get();
+          const greater = agg.data().count || 0;
+          rank = greater + 1;
+        } else {
+          const greaterSnap = await q.get();
+          rank = (greaterSnap.size || 0) + 1;
+        }
+      } catch (e) {
+        // Fallback: compute rank from leaderboard top N (best effort)
+        rank = null;
+      }
+
+      const userSnap = await db.collection(USERS).doc(uid).get();
+      const user = userSnap.exists ? userSnap.data() : {};
       return res.status(200).json({
         success: true,
         data: {
           username: uid,
-          total_points: data.total_points || 0,
+          fullName: user.fullName || '',
+          groups: user.groups || [],
+          total_points: myPoints,
           entry_count: data.entry_count || 0,
+          rank,
           updated_at: data.updated_at || null,
         },
       });
@@ -269,7 +296,9 @@ class UserController {
 
       const patch = {
         role,
-        groups: role === 'user' ? finalUserGroups : [],
+        groups: role === 'user'
+          ? finalUserGroups
+          : (['admin', 'gembala'].includes(role) ? cleanManagedGroups : []),
         managedGroups: ['admin', 'gembala', 'super_admin'].includes(role) ? cleanManagedGroups : [],
       };
 

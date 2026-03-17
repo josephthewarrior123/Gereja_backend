@@ -7,6 +7,7 @@ const ACTIVITIES = 'activities';
 const ENTRIES = 'journal_entries';
 const LEDGER = 'points_ledger';
 const USER_STATS = 'user_stats';
+const USER_GROUP_STATS = 'user_group_stats';
 
 const MAX_BULK = 100;
 
@@ -19,6 +20,10 @@ function parseLimit(raw, defaultVal = 100, maxVal = 500) {
   const n = parseInt(raw, 10);
   if (isNaN(n) || n <= 0) return defaultVal;
   return Math.min(n, maxVal);
+}
+
+function groupStatsDocId(userId, group) {
+  return `${userId}__${group}`;
 }
 
 class JournalController {
@@ -49,6 +54,12 @@ class JournalController {
         return res.status(403).json({ success: false, error: 'User not in activity group' });
       }
 
+      // entry tercatat hanya untuk group yang relevan dengan activity
+      const entryUserGroups = userGroups.filter((g) => (activity.groups || []).includes(g));
+      if (entryUserGroups.length === 0) {
+        return res.status(403).json({ success: false, error: 'User not in activity group' });
+      }
+
       const fieldsError = validateEntryDataByConfig(activity.fields || [], data);
       if (fieldsError) {
         return res.status(400).json({ success: false, error: fieldsError });
@@ -60,11 +71,14 @@ class JournalController {
       const entryRef = db.collection(ENTRIES).doc();
       const ledgerRef = db.collection(LEDGER).doc();
       const statsRef = db.collection(USER_STATS).doc(userId);
+      const groupStatsRefs = entryUserGroups.map((g) =>
+        db.collection(USER_GROUP_STATS).doc(groupStatsDocId(userId, g))
+      );
 
       const entryData = {
         id: entryRef.id,
         user_id: userId,
-        user_groups: userGroups,
+        user_groups: entryUserGroups,
         activity_id,
         activity_name_snapshot: activity.name,
         data,
@@ -81,6 +95,8 @@ class JournalController {
         const statsSnap = await t.get(statsRef);
         const current = statsSnap.exists ? statsSnap.data() : { total_points: 0, entry_count: 0 };
 
+        const groupStatsSnaps = await Promise.all(groupStatsRefs.map((ref) => t.get(ref)));
+
         t.set(entryRef, entryData);
         t.set(ledgerRef, {
           id: ledgerRef.id,
@@ -95,6 +111,19 @@ class JournalController {
           total_points: (current.total_points || 0) + activity.points,
           entry_count: (current.entry_count || 0) + 1,
           updated_at: now,
+        });
+
+        groupStatsRefs.forEach((ref, idx) => {
+          const snap = groupStatsSnaps[idx];
+          const cur = snap.exists ? snap.data() : { total_points: 0, entry_count: 0 };
+          const group = entryUserGroups[idx];
+          t.set(ref, {
+            user_id: userId,
+            group,
+            total_points: (cur.total_points || 0) + activity.points,
+            entry_count: (cur.entry_count || 0) + 1,
+            updated_at: now,
+          }, { merge: true });
         });
       });
 
@@ -221,6 +250,9 @@ class JournalController {
         const entryRef = db.collection(ENTRIES).doc();
         const ledgerRef = db.collection(LEDGER).doc();
         const statsRef = db.collection(USER_STATS).doc(targetUsername);
+        const groupStatsRefs = entryUserGroups.map((g) =>
+          db.collection(USER_GROUP_STATS).doc(groupStatsDocId(targetUsername, g))
+        );
 
         const entryData = {
           id: entryRef.id,
@@ -246,6 +278,8 @@ class JournalController {
               ? statsSnap.data()
               : { total_points: 0, entry_count: 0 };
 
+            const groupStatsSnaps = await Promise.all(groupStatsRefs.map((ref) => t.get(ref)));
+
             t.set(entryRef, entryData);
             t.set(ledgerRef, {
               id: ledgerRef.id,
@@ -261,6 +295,19 @@ class JournalController {
               total_points: (current.total_points || 0) + activity.points,
               entry_count: (current.entry_count || 0) + 1,
               updated_at: now,
+            });
+
+            groupStatsRefs.forEach((ref, idx) => {
+              const snap = groupStatsSnaps[idx];
+              const cur = snap.exists ? snap.data() : { total_points: 0, entry_count: 0 };
+              const group = entryUserGroups[idx];
+              t.set(ref, {
+                user_id: targetUsername,
+                group,
+                total_points: (cur.total_points || 0) + activity.points,
+                entry_count: (cur.entry_count || 0) + 1,
+                updated_at: now,
+              }, { merge: true });
             });
           });
 
@@ -298,7 +345,7 @@ class JournalController {
       const userId = req.user.username;
       const userGroups = req.user.groups || [];
       const { group, activity_id, date_from, date_to, limit: limitRaw, cursor } = req.query;
-      const limit = parseLimit(limitRaw, 100, 500);
+      const limit = parseLimit(limitRaw, 10, 10);
 
       if (group && !userGroups.includes(group)) {
         return res.status(403).json({ success: false, error: 'Kamu tidak terdaftar di group tersebut' });

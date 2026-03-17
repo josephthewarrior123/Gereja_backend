@@ -6,7 +6,8 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node server.js",
     "dev": "nodemon server.js",
-    "migrate:legacy:xlsx": "node scripts/migrateLegacyXlsx.js"
+    "migrate:legacy:xlsx": "node scripts/migrateLegacyXlsx.js",
+    "rebuild:user-group-stats": "node scripts/rebuildUserGroupStats.js"
   },
   "keywords": [],
   "author": "",

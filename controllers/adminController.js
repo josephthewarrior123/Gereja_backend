@@ -8,6 +8,7 @@ const COLLECTION = 'activities';
 const JOURNAL_ENTRIES = 'journal_entries';
 const POINTS_LEDGER = 'points_ledger';
 const USER_STATS = 'user_stats';
+const USER_GROUP_STATS = 'user_group_stats';
 
 // Role yang punya managedGroups (selain super_admin)
 const MANAGED_ROLES = new Set(['admin', 'gembala']);
@@ -49,7 +50,7 @@ async function deleteByQueryInBatches(query, maxBatchSize = 450) {
 
 async function deleteUserRelatedData(username) {
   const userId = String(username || '').trim();
-  if (!userId) return { entries_deleted: 0, ledger_deleted: 0, stats_deleted: 0 };
+  if (!userId) return { entries_deleted: 0, ledger_deleted: 0, stats_deleted: 0, group_stats_deleted: 0 };
 
   const entriesDeleted = await deleteByQueryInBatches(
     db.collection(JOURNAL_ENTRIES).where('user_id', '==', userId)
@@ -72,7 +73,16 @@ async function deleteUserRelatedData(username) {
     db.collection(USER_STATS).where('user_id', '==', userId)
   );
 
-  return { entries_deleted: entriesDeleted, ledger_deleted: ledgerDeleted, stats_deleted: statsDeleted };
+  const groupStatsDeleted = await deleteByQueryInBatches(
+    db.collection(USER_GROUP_STATS).where('user_id', '==', userId)
+  );
+
+  return {
+    entries_deleted: entriesDeleted,
+    ledger_deleted: ledgerDeleted,
+    stats_deleted: statsDeleted,
+    group_stats_deleted: groupStatsDeleted,
+  };
 }
 
 class AdminController {
