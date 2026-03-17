@@ -1,10 +1,12 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const { db } = require('../config/firebase');
 const userDAO = require('../dao/userDAO');
 const groupDAO = require('../dao/groupDAO');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret';
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
+const USER_STATS = 'user_stats';
 
 // Semua role valid di sistem
 const VALID_ROLES = ['super_admin', 'admin', 'gembala', 'user'];
@@ -130,6 +132,26 @@ class UserController {
         createdAt: user.createdAt,
       },
     });
+  }
+
+  // GET /api/users/me/stats — ambil total point & entry count user sendiri
+  async getMyStats(req, res) {
+    try {
+      const uid = req.user.username;
+      const snap = await db.collection(USER_STATS).doc(uid).get();
+      const data = snap.exists ? snap.data() : {};
+      return res.status(200).json({
+        success: true,
+        data: {
+          username: uid,
+          total_points: data.total_points || 0,
+          entry_count: data.entry_count || 0,
+          updated_at: data.updated_at || null,
+        },
+      });
+    } catch (error) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
   }
 
   // PATCH /api/users/me/groups — user update groups diri sendiri

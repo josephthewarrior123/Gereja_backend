@@ -418,7 +418,7 @@ class JournalController {
   async getHistory(req, res) {
     try {
       const { group, user_id, activity_id, date_from, date_to, limit: limitRaw, cursor } = req.query;
-      const limit = parseLimit(limitRaw, 200, 1000);
+      const limit = parseLimit(limitRaw, 10, 10);
       const isSuperAdmin = req.user.role === 'super_admin';
       const managedGroups = req.user.managedGroups || [];
 

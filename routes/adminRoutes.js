@@ -13,11 +13,23 @@ router.get('/admin/users',
     (req, res) => controller.listUsers(req, res)
 );
 
+router.get('/admin/users/:username/stats',
+    authMiddleware,
+    requireRole('admin', 'super_admin', 'gembala'),
+    (req, res) => controller.getUserStats(req, res)
+);
+
 // create & delete hanya admin & super_admin
 router.post('/admin/users',
     authMiddleware,
     requireRole('admin', 'super_admin'),
     (req, res) => controller.upsertUser(req, res)
+);
+
+router.patch('/admin/users/:username/password',
+    authMiddleware,
+    requireRole('admin', 'super_admin'),
+    (req, res) => controller.resetUserPassword(req, res)
 );
 
 router.delete('/admin/users/:username',
@@ -45,6 +57,12 @@ router.patch('/admin/activities/:activityId',
     authMiddleware,
     requireRole('admin', 'super_admin'),
     (req, res) => controller.updateActivity(req, res)
+);
+
+router.delete('/admin/activities/:activityId',
+    authMiddleware,
+    requireRole('admin', 'super_admin'),
+    (req, res) => controller.deleteActivity(req, res)
 );
 
 module.exports = router;

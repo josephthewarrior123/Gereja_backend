@@ -2,8 +2,12 @@ const { db } = require('../config/firebase');
 const { validateActivityFieldsConfig } = require('../utils/validators');
 const userDAO = require('../dao/userDAO');
 const groupDAO = require('../dao/groupDAO');
+const bcrypt = require('bcryptjs');
 
 const COLLECTION = 'activities';
+const JOURNAL_ENTRIES = 'journal_entries';
+const POINTS_LEDGER = 'points_ledger';
+const USER_STATS = 'user_stats';
 
 // Role yang punya managedGroups (selain super_admin)
 const MANAGED_ROLES = new Set(['admin', 'gembala']);
@@ -27,9 +31,96 @@ function hasIntersection(a, b) {
   return a.some((x) => setB.has(x));
 }
 
+async function deleteByQueryInBatches(query, maxBatchSize = 450) {
+  // Firestore batch limit: 500 ops. We keep buffer for safety.
+  let deleted = 0;
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const snap = await query.limit(maxBatchSize).get();
+    if (snap.empty) break;
+
+    const batch = db.batch();
+    snap.docs.forEach((doc) => batch.delete(doc.ref));
+    await batch.commit();
+    deleted += snap.size;
+  }
+  return deleted;
+}
+
+async function deleteUserRelatedData(username) {
+  const userId = String(username || '').trim();
+  if (!userId) return { entries_deleted: 0, ledger_deleted: 0, stats_deleted: 0 };
+
+  const entriesDeleted = await deleteByQueryInBatches(
+    db.collection(JOURNAL_ENTRIES).where('user_id', '==', userId)
+  );
+
+  const ledgerDeleted = await deleteByQueryInBatches(
+    db.collection(POINTS_LEDGER).where('user_id', '==', userId)
+  );
+
+  let statsDeleted = 0;
+  // Normal case: stats doc id = username
+  const statsDocRef = db.collection(USER_STATS).doc(userId);
+  const statsSnap = await statsDocRef.get();
+  if (statsSnap.exists) {
+    await statsDocRef.delete();
+    statsDeleted += 1;
+  }
+  // Defensive: if some docs created with random id but have user_id field
+  statsDeleted += await deleteByQueryInBatches(
+    db.collection(USER_STATS).where('user_id', '==', userId)
+  );
+
+  return { entries_deleted: entriesDeleted, ledger_deleted: ledgerDeleted, stats_deleted: statsDeleted };
+}
+
 class AdminController {
   _col() {
     return db.collection(COLLECTION);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // GET /admin/users/:username/stats
+  // super_admin   : lihat stats siapa aja
+  // admin/gembala : hanya user yang ada di managedGroups-nya
+  // ─────────────────────────────────────────────────────────────────────────────
+  async getUserStats(req, res) {
+    try {
+      const { username } = req.params;
+
+      const existing = await userDAO.findByUsername(username);
+      if (!existing) {
+        return res.status(404).json({ success: false, error: 'User tidak ditemukan' });
+      }
+
+      if (req.user.role !== 'super_admin') {
+        const managedGroups = req.user.managedGroups || [];
+        const userGroups = existing.groups || [];
+        const userManaged = existing.managedGroups || [];
+        if (!hasIntersection(userGroups, managedGroups) && !hasIntersection(userManaged, managedGroups)) {
+          return res.status(403).json({ success: false, error: 'Tidak ada akses untuk user ini' });
+        }
+      }
+
+      const statsSnap = await db.collection(USER_STATS).doc(username).get();
+      const stats = statsSnap.exists ? statsSnap.data() : {};
+
+      return res.status(200).json({
+        success: true,
+        data: {
+          username,
+          fullName: existing.fullName || '',
+          groups: existing.groups || [],
+          total_points: stats.total_points || 0,
+          entry_count: stats.entry_count || 0,
+          updated_at: stats.updated_at || null,
+        },
+      });
+    } catch (error) {
+      console.error('[getUserStats]', error);
+      return res.status(500).json({ success: false, error: error.message });
+    }
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -310,6 +401,91 @@ class AdminController {
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
+  // DELETE /admin/activities/:activityId
+  // super_admin   : bisa hapus activity apa aja
+  // admin         : hanya activity yang group-nya subset dari managedGroups-nya
+  // gembala       : TIDAK bisa hapus — diproteksi di route level
+  // ─────────────────────────────────────────────────────────────────────────────
+  async deleteActivity(req, res) {
+    try {
+      const { activityId } = req.params;
+      const ref = this._col().doc(activityId);
+      const snap = await ref.get();
+      if (!snap.exists) {
+        return res.status(404).json({ success: false, error: 'Activity not found' });
+      }
+
+      const current = snap.data();
+
+      if (req.user.role !== 'super_admin') {
+        const managedGroups = req.user.managedGroups || [];
+        if (!isSubset(current.groups || [], managedGroups)) {
+          return res.status(403).json({ success: false, error: 'Tidak ada akses untuk activity di group ini' });
+        }
+      }
+
+      await ref.delete();
+      return res.status(200).json({ success: true, message: 'Activity berhasil dihapus' });
+    } catch (error) {
+      console.error('[deleteActivity]', error);
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // PATCH /admin/users/:username/password
+  //
+  // super_admin : bisa reset password siapa aja (kecuali super_admin lain)
+  // admin       : hanya user yang ada di managedGroups-nya, tidak bisa reset admin/gembala/super_admin
+  // ─────────────────────────────────────────────────────────────────────────────
+  async resetUserPassword(req, res) {
+    try {
+      const { username } = req.params;
+      const { password } = req.body || {};
+
+      if (!password || typeof password !== 'string') {
+        return res.status(400).json({ success: false, error: 'password wajib' });
+      }
+      if (password.length < 6) {
+        return res.status(400).json({ success: false, error: 'password minimal 6 karakter' });
+      }
+
+      if (req.user.username === username) {
+        return res.status(400).json({ success: false, error: 'Gunakan endpoint profile untuk ganti password sendiri' });
+      }
+
+      const existing = await userDAO.findByUsername(username);
+      if (!existing) {
+        return res.status(404).json({ success: false, error: 'User tidak ditemukan' });
+      }
+
+      // Jangan izinkan reset password super_admin via endpoint ini
+      if (existing.role === 'super_admin') {
+        return res.status(403).json({ success: false, error: 'Tidak bisa reset password super_admin' });
+      }
+
+      if (req.user.role !== 'super_admin') {
+        const managedGroups = req.user.managedGroups || [];
+        if (!hasIntersection(existing.groups || [], managedGroups)) {
+          return res.status(403).json({ success: false, error: 'Tidak ada akses untuk user ini' });
+        }
+        // Admin biasa tidak boleh reset password admin/gembala lain
+        if (existing.role === 'admin' || existing.role === 'gembala') {
+          return res.status(403).json({ success: false, error: 'Admin tidak bisa reset password admin atau gembala lain' });
+        }
+      }
+
+      const hashed = await bcrypt.hash(password, 10);
+      await userDAO.updateUser(username, { password: hashed });
+
+      return res.status(200).json({ success: true, message: 'Password user berhasil direset' });
+    } catch (error) {
+      console.error('[resetUserPassword]', error);
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
   // DELETE /admin/users/:username
   // super_admin   : bisa hapus siapa aja kecuali super_admin lain
   // admin         : hanya user di managedGroups-nya, tidak bisa hapus admin lain
@@ -342,8 +518,13 @@ class AdminController {
         }
       }
 
+      const deletedRelated = await deleteUserRelatedData(username);
       await userDAO.deleteUser(username);
-      return res.status(200).json({ success: true, message: 'User berhasil dihapus' });
+      return res.status(200).json({
+        success: true,
+        message: 'User berhasil dihapus',
+        deleted_related: deletedRelated,
+      });
     } catch (error) {
       console.error('[deleteUser]', error);
       return res.status(500).json({ success: false, error: error.message });

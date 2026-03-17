@@ -16,6 +16,11 @@ router.get('/users/profile',
   (req, res) => userController.getProfile(req, res)
 );
 
+router.get('/users/me/stats',
+  authMiddleware,
+  (req, res) => userController.getMyStats(req, res)
+);
+
 // User update groups diri sendiri (onboarding)
 router.patch('/users/me/groups',
   authMiddleware,
