@@ -548,6 +548,138 @@ class JournalController {
       return res.status(500).json({ success: false, error: error.message });
     }
   }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // GET /journal/groups/:group/monthly-report?year=2026&month=3
+  //
+  // Return data siap pakai untuk chart & tabel:
+  //   activities          : ['Baca Alkitab', ...]  — kolom tabel / layer chart
+  //   summary_by_activity : [{ activity_name, total_count, total_points }, ...]
+  //   users               : [{ username, fullName, total_points, total_count,
+  //                             by_activity: { 'Baca Alkitab': { count, points } } }]
+  //   grand_total         : { total_points, total_count }
+  // ─────────────────────────────────────────────────────────────────────────────
+  async getGroupMonthlyReport(req, res) {
+    try {
+      const { group } = req.params;
+
+      // Access check
+      const isSuperAdmin = req.user.role === 'super_admin';
+      const managedGroups = req.user.managedGroups || [];
+      if (!isSuperAdmin && !managedGroups.includes(group)) {
+        return res.status(403).json({ success: false, error: 'Tidak ada akses ke group ini' });
+      }
+
+      // Validate group
+      const activeGroupKeys = await groupDAO.getActiveGroupKeys();
+      if (!activeGroupKeys.includes(group)) {
+        return res.status(400).json({ success: false, error: `Group '${group}' tidak valid` });
+      }
+
+      // Tahun & bulan (default = bulan ini WIB UTC+7)
+      const nowWIB = new Date(Date.now() + 7 * 60 * 60 * 1000);
+      const year = parseInt(req.query.year, 10) || nowWIB.getUTCFullYear();
+      const month = parseInt(req.query.month, 10) || (nowWIB.getUTCMonth() + 1);
+
+      if (month < 1 || month > 12) {
+        return res.status(400).json({ success: false, error: 'month harus antara 1–12' });
+      }
+
+      // Range timestamp (WIB)
+      const startMs = Date.UTC(year, month - 1, 1) - 7 * 60 * 60 * 1000;
+      const endMs = Date.UTC(year, month, 1) - 7 * 60 * 60 * 1000 - 1;
+
+      // Ambil semua entries group di bulan ini (pakai composite index user_groups+submitted_at)
+      const snap = await db.collection(ENTRIES)
+        .where('user_groups', 'array-contains', group)
+        .where('submitted_at', '>=', startMs)
+        .where('submitted_at', '<=', endMs)
+        .get();
+
+      const entries = snap.docs.map((d) => d.data());
+
+      // Ambil semua member grup (yang 0 entry bulan ini tetap tampil di tabel)
+      const usersSnap = await db.collection('users')
+        .where('groups', 'array-contains', group)
+        .get();
+      const usersMap = {};
+      usersSnap.forEach((doc) => { usersMap[doc.id] = doc.data(); });
+
+      // ── Aggregate ───────────────────────────────────────────────────────────
+      const activitySet = new Set();
+      const userDataMap = {};
+      const activityTotals = {};
+
+      for (const e of entries) {
+        const uid = e.user_id;
+        const actName = e.activity_name_snapshot || e.activity_id || 'Unknown';
+        const pts = e.points_awarded || 0;
+
+        activitySet.add(actName);
+
+        if (!userDataMap[uid]) {
+          userDataMap[uid] = {
+            username: uid,
+            fullName: usersMap[uid]?.fullName || 'Unknown',
+            total_points: 0,
+            total_count: 0,
+            by_activity: {},
+          };
+        }
+        if (!userDataMap[uid].by_activity[actName]) {
+          userDataMap[uid].by_activity[actName] = { count: 0, points: 0 };
+        }
+        userDataMap[uid].by_activity[actName].count += 1;
+        userDataMap[uid].by_activity[actName].points += pts;
+        userDataMap[uid].total_points += pts;
+        userDataMap[uid].total_count += 1;
+
+        if (!activityTotals[actName]) {
+          activityTotals[actName] = { activity_name: actName, total_count: 0, total_points: 0 };
+        }
+        activityTotals[actName].total_count += 1;
+        activityTotals[actName].total_points += pts;
+      }
+
+      // Tambahkan member yang tidak punya entry bulan ini (muncul di tabel dengan 0)
+      for (const uid of Object.keys(usersMap)) {
+        if (!userDataMap[uid]) {
+          userDataMap[uid] = {
+            username: uid,
+            fullName: usersMap[uid]?.fullName || 'Unknown',
+            total_points: 0,
+            total_count: 0,
+            by_activity: {},
+          };
+        }
+      }
+
+      const users = Object.values(userDataMap)
+        .sort((a, b) => b.total_points - a.total_points);
+
+      const grandTotal = users.reduce(
+        (acc, u) => ({
+          total_points: acc.total_points + u.total_points,
+          total_count: acc.total_count + u.total_count,
+        }),
+        { total_points: 0, total_count: 0 }
+      );
+
+      return res.status(200).json({
+        success: true,
+        group,
+        year,
+        month,
+        activities: [...activitySet].sort(),
+        summary_by_activity: Object.values(activityTotals),
+        users,
+        grand_total: grandTotal,
+      });
+    } catch (error) {
+      console.error('[getGroupMonthlyReport]', error);
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  }
 }
 
 module.exports = new JournalController();

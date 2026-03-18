@@ -21,6 +21,11 @@ router.get('/users/me/stats',
   (req, res) => userController.getMyStats(req, res)
 );
 
+router.get('/users/me/monthly-stats',
+  authMiddleware,
+  (req, res) => userController.getMyMonthlyStats(req, res)
+);
+
 // User update groups diri sendiri (onboarding)
 router.patch('/users/me/groups',
   authMiddleware,

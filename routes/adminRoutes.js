@@ -46,22 +46,22 @@ router.get('/admin/activities',
     (req, res) => controller.listAdminActivities(req, res)
 );
 
-// create & update hanya admin & super_admin
+// create, update & delete bisa dilakukan admin, super_admin, dan gembala
 router.post('/admin/activities',
     authMiddleware,
-    requireRole('admin', 'super_admin'),
+    requireRole('admin', 'super_admin', 'gembala'),
     (req, res) => controller.createActivity(req, res)
 );
 
 router.patch('/admin/activities/:activityId',
     authMiddleware,
-    requireRole('admin', 'super_admin'),
+    requireRole('admin', 'super_admin', 'gembala'),
     (req, res) => controller.updateActivity(req, res)
 );
 
 router.delete('/admin/activities/:activityId',
     authMiddleware,
-    requireRole('admin', 'super_admin'),
+    requireRole('admin', 'super_admin', 'gembala'),
     (req, res) => controller.deleteActivity(req, res)
 );
 

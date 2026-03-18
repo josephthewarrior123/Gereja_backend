@@ -8,6 +8,8 @@ const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret';
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
 const USER_STATS = 'user_stats';
 const USERS = 'users';
+const POINTS_LEDGER = 'points_ledger';
+const ENTRIES = 'journal_entries';
 
 // Semua role valid di sistem
 const VALID_ROLES = ['super_admin', 'admin', 'gembala', 'user'];
@@ -181,6 +183,72 @@ class UserController {
     }
   }
 
+  // ─────────────────────────────────────────────────────────────────────────────
+  // GET /api/users/me/monthly-stats?year=2026&month=3
+  // Mengembalikan total poin & entry count user untuk bulan tertentu.
+  // Default: bulan & tahun berjalan (WIB UTC+7).
+  // Query ke journal_entries menggunakan submitted_at (sudah ada composite index).
+  // ─────────────────────────────────────────────────────────────────────────────
+  async getMyMonthlyStats(req, res) {
+    try {
+      const uid = req.user.username;
+
+      // Tentukan tahun & bulan (default = bulan ini di WIB UTC+7)
+      const nowWIB = new Date(Date.now() + 7 * 60 * 60 * 1000);
+      const year = parseInt(req.query.year, 10) || nowWIB.getUTCFullYear();
+      const month = parseInt(req.query.month, 10) || (nowWIB.getUTCMonth() + 1);
+
+      if (month < 1 || month > 12) {
+        return res.status(400).json({ success: false, error: 'month harus antara 1–12' });
+      }
+
+      // Hitung batas awal & akhir bulan dalam ms (WIB = UTC+7)
+      // startMs = 1 [month] [year] 00:00:00 WIB  →  UTC - 7 jam
+      // endMs   = 1 [month+1] [year] 00:00:00 WIB - 1 ms
+      const startMs = Date.UTC(year, month - 1, 1) - 7 * 60 * 60 * 1000;
+      const endMs = Date.UTC(year, month, 1) - 7 * 60 * 60 * 1000 - 1;
+
+      // Query journal_entries — sudah ada composite index (user_id, submitted_at)
+      const snap = await db.collection(ENTRIES)
+        .where('user_id', '==', uid)
+        .where('submitted_at', '>=', startMs)
+        .where('submitted_at', '<=', endMs)
+        .orderBy('submitted_at', 'desc')
+        .get();
+
+      const entries = snap.docs.map((d) => d.data());
+
+      // Hitung total poin & breakdown per activity
+      let totalPoints = 0;
+      const breakdownMap = {};
+      for (const e of entries) {
+        const pts = e.points_awarded || 0;
+        const actName = e.activity_name_snapshot || e.activity_id || 'Unknown';
+        totalPoints += pts;
+        if (!breakdownMap[actName]) {
+          breakdownMap[actName] = { activity_name: actName, count: 0, points: 0 };
+        }
+        breakdownMap[actName].count += 1;
+        breakdownMap[actName].points += pts;
+      }
+
+      return res.status(200).json({
+        success: true,
+        data: {
+          username: uid,
+          year,
+          month,
+          total_points: totalPoints,
+          entry_count: entries.length,
+          breakdown_by_activity: Object.values(breakdownMap),
+        },
+      });
+    } catch (error) {
+      console.error('[getMyMonthlyStats]', error);
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  }
+
   // PATCH /api/users/me/groups — user update groups diri sendiri
   async updateMyGroups(req, res) {
     try {
@@ -280,6 +348,16 @@ class UserController {
 
       const cleanUserGroups = await normalizeGroups(groups);
       let cleanManagedGroups = await normalizeGroups(managedGroups);
+
+      // Batasi admin/gembala hanya boleh 1 managed group
+      if (['admin', 'gembala'].includes(role)) {
+        if (cleanManagedGroups.length > 1) {
+          return res.status(400).json({
+            success: false,
+            error: 'admin/gembala hanya boleh memiliki 1 managed group',
+          });
+        }
+      }
 
       // Kalau promote ke gembala/admin tapi managedGroups kosong,
       // pakai groups lama user supaya tidak hilang (dari onboarding)

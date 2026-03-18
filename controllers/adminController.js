@@ -308,7 +308,8 @@ class AdminController {
 
   // ─────────────────────────────────────────────────────────────────────────────
   // POST /admin/activities — create activity
-  // gembala TIDAK bisa create activity — diproteksi di route level.
+  // super_admin   : bisa buat activity untuk group apa pun
+  // admin/gembala : hanya bisa buat activity untuk managedGroups-nya
   // ─────────────────────────────────────────────────────────────────────────────
   async createActivity(req, res) {
     try {
@@ -361,7 +362,8 @@ class AdminController {
 
   // ─────────────────────────────────────────────────────────────────────────────
   // PATCH /admin/activities/:activityId
-  // gembala TIDAK bisa update activity — diproteksi di route level.
+  // super_admin   : bisa update activity apa pun
+  // admin/gembala : hanya activity yang group-nya subset dari managedGroups-nya
   // ─────────────────────────────────────────────────────────────────────────────
   async updateActivity(req, res) {
     try {
@@ -413,8 +415,7 @@ class AdminController {
   // ─────────────────────────────────────────────────────────────────────────────
   // DELETE /admin/activities/:activityId
   // super_admin   : bisa hapus activity apa aja
-  // admin         : hanya activity yang group-nya subset dari managedGroups-nya
-  // gembala       : TIDAK bisa hapus — diproteksi di route level
+  // admin/gembala : hanya activity yang group-nya subset dari managedGroups-nya
   // ─────────────────────────────────────────────────────────────────────────────
   async deleteActivity(req, res) {
     try {
