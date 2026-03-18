@@ -48,6 +48,14 @@ router.get(
   (req, res) => controller.getGroupMonthlyReport(req, res)
 );
 
+// ── Yearly Report per group (admin / super_admin / gembala) ──────────────────
+router.get(
+  '/journal/groups/:group/yearly-report',
+  authMiddleware,
+  requireRole('gembala', 'admin', 'super_admin'),
+  (req, res) => controller.getGroupYearlyReport(req, res)
+);
+
 // ── History lintas group (admin / super_admin / gembala) ────────────────────
 router.get(
   '/journal/history',

@@ -680,6 +680,138 @@ class JournalController {
       return res.status(500).json({ success: false, error: error.message });
     }
   }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // GET /journal/groups/:group/yearly-report?year=2026
+  //
+  // Return data teraggregate sepanjang 1 tahun (Jan - Des).
+  // Struktur mirip monthly tapi di-grouping lagi per bulan (1 - 12),
+  // sangat berguna untuk Yearly Heatmap atau Trend Line.
+  // ─────────────────────────────────────────────────────────────────────────────
+  async getGroupYearlyReport(req, res) {
+    try {
+      const { group } = req.params;
+
+      // Access check
+      const isSuperAdmin = req.user.role === 'super_admin';
+      const managedGroups = req.user.managedGroups || [];
+      if (!isSuperAdmin && !managedGroups.includes(group)) {
+        return res.status(403).json({ success: false, error: 'Tidak ada akses ke group ini' });
+      }
+
+      // Validate group
+      const activeGroupKeys = await groupDAO.getActiveGroupKeys();
+      if (!activeGroupKeys.includes(group)) {
+        return res.status(400).json({ success: false, error: `Group '${group}' tidak valid` });
+      }
+
+      const nowWIB = new Date(Date.now() + 7 * 60 * 60 * 1000);
+      const year = parseInt(req.query.year, 10) || nowWIB.getUTCFullYear();
+
+      // Range 1 Tahun Penuh (1 Jan - 31 Des WIB)
+      const startMs = Date.UTC(year, 0, 1) - 7 * 60 * 60 * 1000;
+      const endMs = Date.UTC(year, 11, 31, 23, 59, 59, 999) - 7 * 60 * 60 * 1000;
+
+      // Ambil entry 1 tahun penuh
+      const snap = await db.collection(ENTRIES)
+        .where('user_groups', 'array-contains', group)
+        .where('submitted_at', '>=', startMs)
+        .where('submitted_at', '<=', endMs)
+        .get();
+
+      const entries = snap.docs.map(d => d.data());
+
+      // Ambil users
+      const usersSnap = await db.collection('users')
+        .where('groups', 'array-contains', group)
+        .get();
+      const usersMap = {};
+      usersSnap.forEach((doc) => { usersMap[doc.id] = doc.data(); });
+
+      // Aggregate
+      const activitySet = new Set();
+      const monthlySummary = Array.from({ length: 12 }, (_, i) => ({
+        month: i + 1,
+        total_points: 0,
+        total_count: 0,
+        by_activity: {}
+      }));
+      const userDataMap = {};
+
+      for (const e of entries) {
+        const uid = e.user_id;
+        const actName = e.activity_name_snapshot || e.activity_id || 'Unknown';
+        const pts = e.points_awarded || 0;
+
+        // Cari ini bulan berapa (1 - 12)
+        const dateWIB = new Date(e.submitted_at + 7 * 60 * 60 * 1000);
+        const mIdx = dateWIB.getUTCMonth(); // 0 - 11
+
+        activitySet.add(actName);
+
+        // 1. Monthly Summary (Trends)
+        monthlySummary[mIdx].total_points += pts;
+        monthlySummary[mIdx].total_count += 1;
+        if (!monthlySummary[mIdx].by_activity[actName]) {
+          monthlySummary[mIdx].by_activity[actName] = { count: 0, points: 0 };
+        }
+        monthlySummary[mIdx].by_activity[actName].count += 1;
+        monthlySummary[mIdx].by_activity[actName].points += pts;
+
+        // 2. User Aggregate (1 year total)
+        if (!userDataMap[uid]) {
+          userDataMap[uid] = {
+            username: uid,
+            fullName: usersMap[uid]?.fullName || 'Unknown',
+            total_points: 0,
+            total_count: 0,
+            by_activity: {},
+          };
+        }
+        if (!userDataMap[uid].by_activity[actName]) {
+          userDataMap[uid].by_activity[actName] = { count: 0, points: 0 };
+        }
+        userDataMap[uid].by_activity[actName].count += 1;
+        userDataMap[uid].by_activity[actName].points += pts;
+        userDataMap[uid].total_points += pts;
+        userDataMap[uid].total_count += 1;
+      }
+
+      for (const uid of Object.keys(usersMap)) {
+        if (!userDataMap[uid]) {
+          userDataMap[uid] = {
+            username: uid,
+            fullName: usersMap[uid]?.fullName || 'Unknown',
+            total_points: 0,
+            total_count: 0,
+            by_activity: {},
+          };
+        }
+      }
+
+      const users = Object.values(userDataMap).sort((a, b) => b.total_points - a.total_points);
+      const grandTotal = users.reduce(
+        (acc, u) => ({
+          total_points: acc.total_points + u.total_points,
+          total_count: acc.total_count + u.total_count,
+        }),
+        { total_points: 0, total_count: 0 }
+      );
+
+      return res.status(200).json({
+        success: true,
+        group,
+        year,
+        activities: [...activitySet].sort(),
+        monthly_trends: monthlySummary,
+        users,
+        grand_total: grandTotal,
+      });
+    } catch (error) {
+      console.error('[getGroupYearlyReport]', error);
+      return res.status(500).json({ success: false, error: error.message });
+    }
+  }
 }
 
 module.exports = new JournalController();
